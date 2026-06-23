@@ -80,6 +80,11 @@ namespace GitHub.Runner.Common.Tests.Listener
         [Trait("Category", "Runner")]
         public async void TestSelfUpdateAsync()
         {
+            // linux-s390x is not yet published to official GitHub releases; skip this integration test.
+            if (BuildConstants.RunnerPackage.PackageName == "linux-s390x")
+            {
+                return;
+            }
             try
             {
                 await FetchLatestRunner();
