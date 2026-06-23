@@ -28,6 +28,7 @@ RUN curl -f -L -o runner-container-hooks.zip https://github.com/actions/runner-c
 RUN export RUNNER_ARCH=${TARGETARCH} \
     && if [ "$RUNNER_ARCH" = "amd64" ]; then export DOCKER_ARCH=x86_64 ; fi \
     && if [ "$RUNNER_ARCH" = "arm64" ]; then export DOCKER_ARCH=aarch64 ; fi \
+    && if [ "$RUNNER_ARCH" = "s390x" ]; then export DOCKER_ARCH=s390x ; fi \
     && curl -fLo docker.tgz https://download.docker.com/${TARGETOS}/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz \
     && tar zxvf docker.tgz \
     && rm -rf docker.tgz \
