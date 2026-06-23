@@ -27,6 +27,7 @@
 * Add new env var to allow single-prefix multiline logs on stdout by @nuclearpidgeon in https://github.com/actions/runner/pull/4424
 * Bump Microsoft.DevTunnels.Connections from 1.3.39 to 1.3.48 by @dependabot[bot] in https://github.com/actions/runner/pull/4441
 * Bump System.Formats.Asn1 and System.Security.Cryptography.Pkcs by @dependabot[bot] in https://github.com/actions/runner/pull/4369
+* Add linux-s390x support: use system dotnet on native s390x hosts and remap build RID to ubuntu.26.04-s390x
 
 ## New Contributors
 * @GitPaulo made their first contribution in https://github.com/actions/runner/pull/4383
@@ -128,6 +129,8 @@ tar xzf ./actions-runner-linux-arm-<RUNNER_VERSION>.tar.gz
 ```
 
 ## Linux s390x
+
+> **Note:** This release adds first-class support for s390x (IBM Z). On a native s390x Linux host, `dev.sh` now uses the system-installed .NET SDK (installed via `apt install dotnet-sdk-8.0`) instead of attempting to download a tarball that Microsoft does not publish for this architecture. The build RID is automatically remapped to `ubuntu.26.04-s390x` to match Ubuntu 26.04 system packages, while the released package retains the `linux-s390x` name.
 
 ```bash
 # Create a folder
