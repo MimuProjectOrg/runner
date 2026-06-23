@@ -71,6 +71,13 @@ if [[ -n "$DEV_TARGET_RUNTIME" ]]; then
     RUNTIME_ID="$DEV_TARGET_RUNTIME"
 fi
 
+# On Ubuntu s390x the system-installed .NET uses the ubuntu.26.04-s390x RID for packs;
+# keep RUNTIME_ID=linux-s390x for package naming but use the Ubuntu RID for the actual build.
+BUILD_RUNTIME_ID="${RUNTIME_ID}"
+if [[ "${RUNTIME_ID}" == "linux-s390x" && "${CURRENT_PLATFORM}" == "linux" ]]; then
+    BUILD_RUNTIME_ID="ubuntu.26.04-s390x"
+fi
+
 # Make sure current platform support publish the dotnet runtime
 # Windows can publish win-x86/x64/arm64
 # Linux can publish linux-x64/arm/arm64
@@ -125,13 +132,13 @@ function heading()
 function build ()
 {
     heading "Building ..."
-    dotnet msbuild -t:Build -p:PackageRuntime="${RUNTIME_ID}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:RunnerVersion="${RUNNER_VERSION}" ./dir.proj || failed build
+    dotnet msbuild -t:Build -p:PackageRuntime="${RUNTIME_ID}" -p:BuildRuntimeId="${BUILD_RUNTIME_ID}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:RunnerVersion="${RUNNER_VERSION}" ./dir.proj || failed build
 }
 
 function layout ()
 {
     heading "Create layout ..."
-    dotnet msbuild -t:layout -p:PackageRuntime="${RUNTIME_ID}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:RunnerVersion="${RUNNER_VERSION}" ./dir.proj || failed build
+    dotnet msbuild -t:layout -p:PackageRuntime="${RUNTIME_ID}" -p:BuildRuntimeId="${BUILD_RUNTIME_ID}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:RunnerVersion="${RUNNER_VERSION}" ./dir.proj || failed build
 
     #change execution flag to allow running with sudo
     if [[ ("$CURRENT_PLATFORM" == "linux") || ("$CURRENT_PLATFORM" == "darwin") ]]; then
@@ -154,7 +161,7 @@ function runtest ()
         ulimit -n 1024
     fi
 
-    dotnet msbuild -t:test -p:PackageRuntime="${RUNTIME_ID}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:RunnerVersion="${RUNNER_VERSION}" ./dir.proj || failed "failed tests"
+    dotnet msbuild -t:test -p:PackageRuntime="${RUNTIME_ID}" -p:BuildRuntimeId="${BUILD_RUNTIME_ID}" -p:BUILDCONFIG="${BUILD_CONFIG}" -p:RunnerVersion="${RUNNER_VERSION}" ./dir.proj || failed "failed tests"
 }
 
 function format()
@@ -199,6 +206,23 @@ function package ()
 
     popd > /dev/null
 }
+
+# On Linux s390x, Microsoft does not publish a .NET SDK tarball; use the system
+# dotnet (installed via apt) by creating the sentinel directory that dev.sh uses
+# to detect a cached SDK install.
+if [[ "${RUNTIME_ID}" == "linux-s390x" && "${CURRENT_PLATFORM}" == "linux" ]]; then
+    SYSTEM_DOTNET=$(command -v dotnet 2>/dev/null || true)
+    if [[ -n "${SYSTEM_DOTNET}" ]]; then
+        heading "s390x: using system dotnet (${SYSTEM_DOTNET})"
+        mkdir -p "${DOTNETSDK_INSTALLDIR}"
+        # Create a wrapper that delegates to the real dotnet binary
+        ln -sf "${SYSTEM_DOTNET}" "${DOTNETSDK_INSTALLDIR}/dotnet"
+        echo "${DOTNETSDK_VERSION}" > "${DOTNETSDK_INSTALLDIR}/.${DOTNETSDK_VERSION}"
+    else
+        echo "ERROR: No system dotnet found on s390x. Install dotnet-sdk-10.0 via apt." >&2
+        exit 1
+    fi
+fi
 
 # Install .NET SDK
 if [[ (! -d "${DOTNETSDK_INSTALLDIR}") || (! -e "${DOTNETSDK_INSTALLDIR}/.${DOTNETSDK_VERSION}") || (! -e "${DOTNETSDK_INSTALLDIR}/dotnet") ]]; then

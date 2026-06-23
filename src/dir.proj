@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="14.0" DefaultTargets="Build"
-    xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="14.0" DefaultTargets="Build"    xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <!-- Allow overriding the dotnet RuntimeIdentifier independently of the package name.
+         Use BuildRuntimeId=ubuntu.26.04-s390x on Ubuntu s390x where Microsoft does not
+         publish linux-s390x runtime packs to nuget.org. -->
+    <PropertyGroup>
+        <BuildRuntimeId Condition="'$(BuildRuntimeId)' == ''">$(PackageRuntime)</BuildRuntimeId>
+    </PropertyGroup>
+
     <Target Name="GenerateConstant">
         <Exec Command="git rev-parse HEAD" ConsoleToMSBuild="true">
             <Output TaskParameter="ConsoleOutput" PropertyName="GitInfoCommitHash" />
@@ -42,7 +48,7 @@
 
     <Target Name="Build" DependsOnTargets="GenerateConstant">
         <MSBuild Targets="Restore" Projects="@(ProjectFiles)" StopOnFirstFailure="true" />
-        <MSBuild Targets="Publish" Projects="@(ProjectFiles)" BuildInParallel="false" StopOnFirstFailure="true" Properties="Configuration=$(BUILDCONFIG);PackageRuntime=$(PackageRuntime);Version=$(RunnerVersion);RuntimeIdentifier=$(PackageRuntime);PublishDir=$(MSBuildProjectDirectory)/../_layout/bin" />
+        <MSBuild Targets="Publish" Projects="@(ProjectFiles)" BuildInParallel="false" StopOnFirstFailure="true" Properties="Configuration=$(BUILDCONFIG);PackageRuntime=$(PackageRuntime);Version=$(RunnerVersion);RuntimeIdentifier=$(BuildRuntimeId);PublishDir=$(MSBuildProjectDirectory)/../_layout/bin" />
         <Exec Command="%22$(DesktopMSBuild)%22 Runner.Service/Windows/RunnerService.csproj /p:Configuration=$(BUILDCONFIG) /p:PackageRuntime=$(PackageRuntime) /p:OutputPath=%22$(MSBuildProjectDirectory)/../_layout/bin%22" ConsoleToMSBuild="true" Condition="'$(PackageRuntime)' == 'win-x64' Or '$(PackageRuntime)' == 'win-x86' Or '$(PackageRuntime)' == 'win-arm64'" />
     </Target>
 
