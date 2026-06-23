@@ -187,3 +187,8 @@ fi
 if [[ "$PACKAGERUNTIME" == "linux-arm" ]]; then
     acquireExternalTool "$NODE_URL/v${NODE20_VERSION}/node-v${NODE20_VERSION}-linux-armv7l.tar.gz" node20 fix_nested_dir
 fi
+
+if [[ "$PACKAGERUNTIME" == "linux-s390x" ]]; then
+    acquireExternalTool "$NODE_URL/v${NODE20_VERSION}/node-v${NODE20_VERSION}-linux-s390x.tar.gz" node20 fix_nested_dir
+    acquireExternalTool "$NODE_URL/v${NODE24_VERSION}/node-v${NODE24_VERSION}-linux-s390x.tar.gz" node24 fix_nested_dir
+fi
