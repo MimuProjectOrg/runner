@@ -53,8 +53,13 @@
     </Target>
 
     <Target Name="Test" DependsOnTargets="GenerateConstant">
+        <PropertyGroup>
+            <!-- On s390x only .NET 10+ is available; target net10.0 to match Test.csproj's conditional TFM. -->
+            <TestFrameworkArg Condition="'$(PackageRuntime)' == 'linux-s390x'">--framework net10.0</TestFrameworkArg>
+            <TestFrameworkArg Condition="'$(PackageRuntime)' != 'linux-s390x'"></TestFrameworkArg>
+        </PropertyGroup>
         <Exec Command="dotnet build Test/Test.csproj -c $(BUILDCONFIG) /p:PackageRuntime=$(PackageRuntime)" ConsoleToMSBuild="true" />
-        <Exec Command="dotnet test Test/Test.csproj -c $(BUILDCONFIG) --no-build --logger:trx" ConsoleToMSBuild="true" />
+        <Exec Command="dotnet test Test/Test.csproj -c $(BUILDCONFIG) --no-build $(TestFrameworkArg) --logger:trx" ConsoleToMSBuild="true" />
     </Target>
 
     <Target Name="Layout" DependsOnTargets="Clean;Build">
