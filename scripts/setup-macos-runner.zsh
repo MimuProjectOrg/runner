@@ -45,8 +45,39 @@ usage() {
     exit 0
 }
 
+# M2: Validate operator-supplied inputs against strict patterns.
+# Accepted: alphanumeric, hyphens, underscores, dots.  Repo scope allows one slash.
+validate_scope() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ ]] \
+        || fatal "Invalid scope '${1}'. Expected org (myorg) or repo (myorg/myrepo)."
+}
+validate_hostname() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$ ]] \
+        || fatal "Invalid GHE hostname '${1}'. Must be a plain hostname with no scheme or path."
+}
+validate_labels() {
+    # Each comma-separated label: alphanumeric, hyphens, underscores, dots
+    [[ "$1" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] \
+        || fatal "Invalid labels '${1}'. Use comma-separated alphanumeric identifiers."
+}
+
 # ---------------------------------------------------------------------------
-# Sub-Task 1: Argument parsing
+# M1: Privileged bootstrap vs. unprivileged runner-install phases.
+#
+# When the script is invoked as root (phase 1) it:
+#   - Creates the gh-runner user/group
+#   - Creates the home and actions-runner directories
+#   - Re-executes itself as gh-runner (phase 2) for all network/install work
+#
+# Phase 2 is triggered by the internal --_continue flag; it must never be
+# called directly by the operator.
+# ---------------------------------------------------------------------------
+
+PHASE2=0
+[[ "${1:-}" == "--_continue" ]] && { PHASE2=1; shift; }
+
+# ---------------------------------------------------------------------------
+# Argument parsing
 # ---------------------------------------------------------------------------
 
 runner_scope=""
@@ -78,18 +109,184 @@ zparseopts -D -E \
 runner_name="${runner_name:-$(hostname)}"
 
 # ---------------------------------------------------------------------------
-# Sub-Task 1: Guards — platform and root (after -h so help works without sudo)
+# Guards — platform (after -h so help works without sudo)
 # ---------------------------------------------------------------------------
 
 [[ "$(uname)" == "Darwin" ]] \
     || fatal "This script must run on macOS (detected: $(uname))"
 
+# ---------------------------------------------------------------------------
+# Validate operator-supplied inputs (M2) — before any network or fs work
+# ---------------------------------------------------------------------------
+
+[[ -n "$runner_scope" ]] \
+    || fatal "Supply the runner scope with -s (e.g. -s myorg or -s myorg/myrepo)"
+
+validate_scope "$runner_scope"
+[[ -n "$ghe_hostname" ]] && validate_hostname "$ghe_hostname"
+[[ -n "$labels"       ]] && validate_labels  "$labels"
+
+[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" ]] \
+    || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
+
+# ---------------------------------------------------------------------------
+# Phase 2 (unprivileged) — entered via re-exec as gh-runner
+# ---------------------------------------------------------------------------
+
+if [[ $PHASE2 -eq 1 ]]; then
+    # Prerequisites and arch (Sub-Task 2)
+    (( $+commands[curl] )) || fatal "curl required. Install via Homebrew: brew install curl"
+    (( $+commands[jq] ))   || fatal "jq required.  Install via Homebrew: brew install jq"
+
+    raw_arch=$(uname -m)
+    runner_arch=x64
+    [[ $raw_arch == arm64 ]] && runner_arch=arm64
+
+    info "macOS $(sw_vers -productVersion) · ${raw_arch} → runner_arch=${runner_arch}"
+
+    RUNNER_DIR=/Users/gh-runner/actions-runner
+
+    # Sub-Task 4: Download the runner tarball --------------------------------
+
+    # M3: Enforce HTTPS-only, minimum TLS 1.2 on every curl call.
+    CURL_OPTS=( --proto '=https' --tlsv1.2 -fsSL )
+
+    latest_label=$(curl "${CURL_OPTS[@]}" \
+        https://api.github.com/repos/actions/runner/releases/latest \
+        | jq -r '.tag_name')
+    latest_version=${latest_label[2,-1]}   # strip leading 'v' (Zsh 1-based slice)
+
+    runner_file="actions-runner-osx-${runner_arch}-${latest_version}.tar.gz"
+    runner_url="https://github.com/actions/runner/releases/download/${latest_label}/${runner_file}"
+    sha_url="${runner_url}.sha256"
+
+    if [[ -f "${runner_file}" && -f "${runner_file}.sha256" ]]; then
+        info "${runner_file} exists. skipping download."
+    else
+        info "Downloading ${runner_file} ..."
+        info "${runner_url}"
+        curl "${CURL_OPTS[@]}" -O -L "${runner_url}"
+
+        # H2: Download the SHA-256 checksum file published by GitHub.
+        info "Downloading checksum ..."
+        curl "${CURL_OPTS[@]}" -o "${runner_file}.sha256" -L "${sha_url}"
+    fi
+
+    [[ -f "${runner_file}" ]]        || fatal "Tarball not found after download: ${runner_file}"
+    [[ -f "${runner_file}.sha256" ]] || fatal "Checksum file not found: ${runner_file}.sha256"
+
+    # H2: Verify integrity before extraction.
+    # GitHub's .sha256 file contains "<hash>  <filename>" — shasum -c handles this.
+    info "Verifying SHA-256 checksum ..."
+    shasum -a 256 -c "${runner_file}.sha256" \
+        || fatal "SHA-256 checksum mismatch — tarball may be corrupt or tampered."
+    info "Checksum OK"
+
+    # Sub-Task 5: Extract tarball --------------------------------------------
+
+    info "Extracting ${runner_file} to ${RUNNER_DIR}"
+    tar xzf "./${runner_file}" -C "${RUNNER_DIR}"
+
+    [[ -f "${RUNNER_DIR}/run.sh" ]] || fatal "Extraction failed — run.sh not found in ${RUNNER_DIR}"
+    info "Extraction complete"
+
+    # Sub-Task 6: Configure the runner (config.sh) ---------------------------
+
+    if [[ -n "$ghe_hostname" ]]; then
+        RUNNER_URL="https://${ghe_hostname}/${runner_scope}"
+        BASE_API_URL="https://${ghe_hostname}/api/v3"
+    else
+        RUNNER_URL="https://github.com/${runner_scope}"
+        BASE_API_URL="https://api.github.com"
+    fi
+
+    if [[ -n "$reg_token" ]]; then
+        RUNNER_TOKEN="$reg_token"
+        info "Using supplied registration token"
+    else
+        info "Exchanging RUNNER_CFG_PAT for a registration token"
+
+        if [[ "$runner_scope" == */* ]]; then
+            orgs_or_repos="repos"
+        else
+            orgs_or_repos="orgs"
+        fi
+
+        RUNNER_TOKEN=$(
+            curl "${CURL_OPTS[@]}" -X POST \
+                "${BASE_API_URL}/${orgs_or_repos}/${runner_scope}/actions/runners/registration-token" \
+                -H "Accept: application/vnd.github.everest-preview+json" \
+                -H "Authorization: token ${RUNNER_CFG_PAT}" \
+            | jq -r '.token'
+        )
+
+        # H1: Scrub the PAT from the environment immediately after use.
+        unset RUNNER_CFG_PAT
+
+        [[ "$RUNNER_TOKEN" != "null" && -n "$RUNNER_TOKEN" ]] \
+            || fatal "Failed to obtain a registration token — check RUNNER_CFG_PAT and scope"
+    fi
+
+    ALL_LABELS="self-hosted,macOS,${runner_arch}${labels:+,$labels}"
+
+    info "Configuring runner '${runner_name}' at ${RUNNER_URL}"
+    info "Labels: ${ALL_LABELS}"
+
+    # L1: Pass the registration token via env var so it does not appear in
+    #     `ps aux` output. ACTIONS_RUNNER_INPUT_TOKEN is read by config.sh
+    #     when --token is omitted.
+    (
+        cd "${RUNNER_DIR}"
+        ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" \
+        ./config.sh \
+            --unattended \
+            --url    "${RUNNER_URL}" \
+            --name   "${runner_name}" \
+            --labels "${ALL_LABELS}" \
+            ${runner_group:+--runnergroup "${runner_group}"} \
+            ${replace:+--replace} \
+            ${disableupdate:+--disableupdate}
+    )
+    unset RUNNER_TOKEN
+
+    [[ -f "${RUNNER_DIR}/.runner" ]] \
+        || fatal "config.sh completed but .runner credentials file was not created"
+
+    info "Runner configured successfully"
+
+    # Sub-Task 7: Install and load the launchd LaunchAgent (svc.sh) ----------
+
+    info "Installing launchd LaunchAgent"
+    (cd "${RUNNER_DIR}" && ./svc.sh install)
+
+    info "Starting service"
+    (cd "${RUNNER_DIR}" && ./svc.sh start)
+
+    info "Service status"
+    (cd "${RUNNER_DIR}" && ./svc.sh status)
+
+    print ""
+    print "======================================================"
+    print "  GitHub Actions runner installed and running"
+    print "  Name  : ${runner_name}"
+    print "  Scope : ${RUNNER_URL}"
+    print "  Labels: ${ALL_LABELS}"
+    print "  User  : gh-runner"
+    print "  Dir   : ${RUNNER_DIR}"
+    print "  Logs  : /Users/gh-runner/Library/Logs/actions.runner.*/"
+    print "  Plist : /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist"
+    print "======================================================"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 1 (root) — user/group/directory bootstrap
+# ---------------------------------------------------------------------------
+
 [[ "$(id -u)" -eq 0 ]] \
     || fatal "Must run as root or via sudo (required for dscl user/group creation)"
 
-# ---------------------------------------------------------------------------
-# Sub-Task 2: Validate prerequisites and detect architecture
-# ---------------------------------------------------------------------------
+# Sub-Task 2: prerequisites check runs in phase 1 so we fail fast ------------
 
 (( $+commands[curl] )) || fatal "curl required. Install via Homebrew: brew install curl"
 (( $+commands[jq] ))   || fatal "jq required.  Install via Homebrew: brew install jq"
@@ -100,25 +297,12 @@ runner_arch=x64
 
 info "macOS $(sw_vers -productVersion) · ${raw_arch} → runner_arch=${runner_arch}"
 
-# ---------------------------------------------------------------------------
-# Sub-Task 1 (continued): Validate required arguments
-# ---------------------------------------------------------------------------
-
-[[ -n "$runner_scope" ]] \
-    || fatal "Supply the runner scope with -s (e.g. -s myorg or -s myorg/myrepo)"
-
-[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" ]] \
-    || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
-
-# ---------------------------------------------------------------------------
-# Sub-Task 3: Create gh-runner group, user, home, and actions-runner dir
-# ---------------------------------------------------------------------------
+# Sub-Task 3: Create gh-runner group, user, home, and actions-runner dir -----
 
 RUNNER_DIR=/Users/gh-runner/actions-runner
 
 info "Ensuring group gh-runner exists"
 if ! dscl . -read /Groups/gh-runner &>/dev/null; then
-    # Find the next free GID >= 500
     GH_GID=$(dscl . -list /Groups PrimaryGroupID \
         | awk '{print $2}' \
         | sort -n \
@@ -133,7 +317,6 @@ fi
 
 info "Ensuring user gh-runner exists"
 if ! dscl . -read /Users/gh-runner &>/dev/null; then
-    # Find the next free UID >= 500
     GH_UID=$(dscl . -list /Users UniqueID \
         | awk '{print $2}' \
         | sort -n \
@@ -151,15 +334,13 @@ else
 fi
 
 info "Ensuring /Users/gh-runner home directory exists"
-install -d -m 755 -o gh-runner -g gh-runner /Users/gh-runner
+# L2: mode 700 — home is private to gh-runner only (matches macOS default drwx------).
+install -d -m 700 -o gh-runner -g gh-runner /Users/gh-runner
 
 info "Ensuring ${RUNNER_DIR} exists"
 install -d -m 750 -o gh-runner -g gh-runner "${RUNNER_DIR}"
 
-# ---------------------------------------------------------------------------
-# Sub-Task 3 (continued): Idempotency guard
-# ---------------------------------------------------------------------------
-
+# Idempotency guard: check for existing installation before dropping privileges.
 if [[ -f "${RUNNER_DIR}/run.sh" ]]; then
     if [[ -z "$replace" ]]; then
         fatal "Runner already installed at ${RUNNER_DIR}. Pass -f to replace."
@@ -168,121 +349,25 @@ if [[ -f "${RUNNER_DIR}/run.sh" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Sub-Task 4: Download the runner tarball
+# M1: Drop root — re-exec the remainder of the script as gh-runner.
+# Pass all parsed options explicitly so phase 2 does not need to re-parse
+# from an untrusted environment.
+# RUNNER_CFG_PAT is forwarded via sudo -E (only that variable is preserved).
 # ---------------------------------------------------------------------------
 
-latest_label=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest \
-               | jq -r '.tag_name')
-latest_version=${latest_label[2,-1]}   # strip leading 'v' (Zsh 1-based slice)
+info "Dropping root — continuing as gh-runner"
 
-runner_file="actions-runner-osx-${runner_arch}-${latest_version}.tar.gz"
-runner_url="https://github.com/actions/runner/releases/download/${latest_label}/${runner_file}"
+# Build the argument list for the re-exec from the already-validated variables.
+reexec_args=( --_continue -s "$runner_scope" )
+[[ -n "$ghe_hostname" ]] && reexec_args+=( -g "$ghe_hostname" )
+[[ -n "$runner_name"  ]] && reexec_args+=( -n "$runner_name"  )
+[[ -n "$labels"       ]] && reexec_args+=( -l "$labels"       )
+[[ -n "$runner_group" ]] && reexec_args+=( -r "$runner_group" )
+[[ -n "$reg_token"    ]] && reexec_args+=( -t "$reg_token"    )
+[[ -n "$disableupdate" ]] && reexec_args+=( -d )
+[[ -n "$replace"      ]] && reexec_args+=( -f )
 
-if [[ -f "${runner_file}" ]]; then
-    info "${runner_file} exists. skipping download."
-else
-    info "Downloading ${runner_file} ..."
-    info "${runner_url}"
-    curl -fsSL -O -L "${runner_url}"
-fi
-
-[[ -f "${runner_file}" ]] || fatal "Tarball not found after download: ${runner_file}"
-
-# ---------------------------------------------------------------------------
-# Sub-Task 5: Extract tarball and fix ownership
-# ---------------------------------------------------------------------------
-
-info "Extracting ${runner_file} to ${RUNNER_DIR}"
-tar xzf "./${runner_file}" -C "${RUNNER_DIR}"
-chown -R gh-runner:gh-runner "${RUNNER_DIR}"
-
-[[ -f "${RUNNER_DIR}/run.sh" ]] || fatal "Extraction failed — run.sh not found in ${RUNNER_DIR}"
-info "Extraction complete"
-
-# ---------------------------------------------------------------------------
-# Sub-Task 6: Configure the runner (config.sh)
-# ---------------------------------------------------------------------------
-
-if [[ -n "$ghe_hostname" ]]; then
-    RUNNER_URL="https://${ghe_hostname}/${runner_scope}"
-    BASE_API_URL="https://${ghe_hostname}/api/v3"
-else
-    RUNNER_URL="https://github.com/${runner_scope}"
-    BASE_API_URL="https://api.github.com"
-fi
-
-if [[ -n "$reg_token" ]]; then
-    RUNNER_TOKEN="$reg_token"
-    info "Using supplied registration token"
-else
-    info "Exchanging RUNNER_CFG_PAT for a registration token"
-
-    if [[ "$runner_scope" == */* ]]; then
-        orgs_or_repos="repos"
-    else
-        orgs_or_repos="orgs"
-    fi
-
-    RUNNER_TOKEN=$(
-        curl -fsSL -X POST \
-            "${BASE_API_URL}/${orgs_or_repos}/${runner_scope}/actions/runners/registration-token" \
-            -H "Accept: application/vnd.github.everest-preview+json" \
-            -H "Authorization: token ${RUNNER_CFG_PAT}" \
-        | jq -r '.token'
-    )
-
-    [[ "$RUNNER_TOKEN" != "null" && -n "$RUNNER_TOKEN" ]] \
-        || fatal "Failed to obtain a registration token — check RUNNER_CFG_PAT and scope"
-fi
-
-ALL_LABELS="self-hosted,macOS,${runner_arch}${labels:+,$labels}"
-
-info "Configuring runner '${runner_name}' at ${RUNNER_URL}"
-info "Labels: ${ALL_LABELS}"
-
-(
-    cd "${RUNNER_DIR}"
-    sudo -u gh-runner ./config.sh \
-        --unattended \
-        --url    "${RUNNER_URL}" \
-        --token  "${RUNNER_TOKEN}" \
-        --name   "${runner_name}" \
-        --labels "${ALL_LABELS}" \
-        ${runner_group:+--runnergroup "${runner_group}"} \
-        ${replace:+--replace} \
-        ${disableupdate:+--disableupdate}
-)
-
-[[ -f "${RUNNER_DIR}/.runner" ]] \
-    || fatal "config.sh completed but .runner credentials file was not created"
-
-info "Runner configured successfully"
-
-# ---------------------------------------------------------------------------
-# Sub-Task 7: Install and load the launchd LaunchAgent (svc.sh)
-# ---------------------------------------------------------------------------
-
-info "Installing launchd LaunchAgent"
-(cd "${RUNNER_DIR}" && sudo -u gh-runner ./svc.sh install)
-
-info "Starting service"
-(cd "${RUNNER_DIR}" && sudo -u gh-runner ./svc.sh start)
-
-info "Service status"
-(cd "${RUNNER_DIR}" && sudo -u gh-runner ./svc.sh status)
-
-# ---------------------------------------------------------------------------
-# Success banner
-# ---------------------------------------------------------------------------
-
-print ""
-print "======================================================"
-print "  GitHub Actions runner installed and running"
-print "  Name  : ${runner_name}"
-print "  Scope : ${RUNNER_URL}"
-print "  Labels: ${ALL_LABELS}"
-print "  User  : gh-runner"
-print "  Dir   : ${RUNNER_DIR}"
-print "  Logs  : /Users/gh-runner/Library/Logs/actions.runner.*/"
-print "  Plist : /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist"
-print "======================================================"
+# sudo -E forwards only variables that are already in the environment.
+# RUNNER_CFG_PAT is unsurprisingly already there when set by the operator;
+# it will be unset inside phase 2 immediately after the token exchange.
+exec sudo -u gh-runner -E /bin/zsh "${SCRIPT_PATH}" "${reexec_args[@]}"
