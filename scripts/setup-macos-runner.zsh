@@ -61,6 +61,16 @@ validate_labels() {
         || fatal "Invalid labels '${1}'. Use comma-separated alphanumeric identifiers."
 }
 
+validate_runner_name() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] \
+        || fatal "Invalid runner name '${1}'. Use alphanumeric characters, hyphens, underscores, or dots only."
+}
+
+validate_runner_group() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] \
+        || fatal "Invalid runner group '${1}'. Use alphanumeric characters, hyphens, underscores, or dots only."
+}
+
 # ---------------------------------------------------------------------------
 # M1: Privileged bootstrap vs. unprivileged runner-install phases.
 #
@@ -107,6 +117,10 @@ zparseopts -D -E \
 [[ ${#_f} -gt 0 ]] && replace=true
 
 runner_name="${runner_name:-$(hostname)}"
+runner_group="${runner_group:-Default}"
+
+validate_runner_name "$runner_name"
+validate_runner_group "$runner_group"
 
 # ---------------------------------------------------------------------------
 # Guards — platform (after -h so help works without sudo)
@@ -149,7 +163,7 @@ if [[ $PHASE2 -eq 1 ]]; then
     # Sub-Task 4: Download the runner tarball --------------------------------
 
     # M3: Enforce HTTPS-only, minimum TLS 1.2 on every curl call.
-    CURL_OPTS=( --proto '=https' --tlsv1.2 -fsSL )
+    CURL_OPTS=( --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 -fsSL )
 
     latest_label=$(curl "${CURL_OPTS[@]}" \
         https://api.github.com/repos/actions/runner/releases/latest \
@@ -165,11 +179,11 @@ if [[ $PHASE2 -eq 1 ]]; then
     else
         info "Downloading ${runner_file} ..."
         info "${runner_url}"
-        curl "${CURL_OPTS[@]}" -O -L "${runner_url}"
+        curl "${CURL_OPTS[@]}" -O "${runner_url}"
 
         # H2: Download the SHA-256 checksum file published by GitHub.
         info "Downloading checksum ..."
-        curl "${CURL_OPTS[@]}" -o "${runner_file}.sha256" -L "${sha_url}"
+        curl "${CURL_OPTS[@]}" -o "${runner_file}.sha256" "${sha_url}"
     fi
 
     [[ -f "${runner_file}" ]]        || fatal "Tarball not found after download: ${runner_file}"
@@ -188,6 +202,7 @@ if [[ $PHASE2 -eq 1 ]]; then
     tar xzf "./${runner_file}" -C "${RUNNER_DIR}"
 
     [[ -f "${RUNNER_DIR}/run.sh" ]] || fatal "Extraction failed — run.sh not found in ${RUNNER_DIR}"
+    rm -f "./${runner_file}" "./${runner_file}.sha256"
     info "Extraction complete"
 
     # Sub-Task 6: Configure the runner (config.sh) ---------------------------
@@ -200,7 +215,11 @@ if [[ $PHASE2 -eq 1 ]]; then
         BASE_API_URL="https://api.github.com"
     fi
 
-    if [[ -n "$reg_token" ]]; then
+    if [[ -n "${PHASE2_REG_TOKEN:-}" ]]; then
+        RUNNER_TOKEN="${PHASE2_REG_TOKEN}"
+        info "Using supplied registration token"
+        unset PHASE2_REG_TOKEN
+    elif [[ -n "$reg_token" ]]; then
         RUNNER_TOKEN="$reg_token"
         info "Using supplied registration token"
     else
@@ -215,7 +234,7 @@ if [[ $PHASE2 -eq 1 ]]; then
         RUNNER_TOKEN=$(
             curl "${CURL_OPTS[@]}" -X POST \
                 "${BASE_API_URL}/${orgs_or_repos}/${runner_scope}/actions/runners/registration-token" \
-                -H "Accept: application/vnd.github.everest-preview+json" \
+                -H "Accept: application/vnd.github+json" \
                 -H "Authorization: token ${RUNNER_CFG_PAT}" \
             | jq -r '.token'
         )
@@ -357,13 +376,16 @@ fi
 
 info "Dropping root — continuing as gh-runner"
 
+if [[ -n "$reg_token" ]]; then
+    export PHASE2_REG_TOKEN="$reg_token"
+fi
+
 # Build the argument list for the re-exec from the already-validated variables.
 reexec_args=( --_continue -s "$runner_scope" )
 [[ -n "$ghe_hostname" ]] && reexec_args+=( -g "$ghe_hostname" )
 [[ -n "$runner_name"  ]] && reexec_args+=( -n "$runner_name"  )
 [[ -n "$labels"       ]] && reexec_args+=( -l "$labels"       )
 [[ -n "$runner_group" ]] && reexec_args+=( -r "$runner_group" )
-[[ -n "$reg_token"    ]] && reexec_args+=( -t "$reg_token"    )
 [[ -n "$disableupdate" ]] && reexec_args+=( -d )
 [[ -n "$replace"      ]] && reexec_args+=( -f )
 
