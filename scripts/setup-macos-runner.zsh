@@ -24,6 +24,9 @@
 
 set -euo pipefail
 
+# Capture script path at top level before $0 is shadowed inside functions.
+SCRIPT_PATH="${0:A}"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -38,7 +41,7 @@ info() {
 }
 
 usage() {
-    sed -n '6,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '6,24p' "${SCRIPT_PATH}" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -57,10 +60,12 @@ replace=""
 
 zparseopts -D -E \
     s:=_s g:=_g n:=_n l:=_l r:=_r t:=_t \
-    d=_d f=_f h=_h \
+    d=_d f=_f h=_h -help=_help \
     || { usage; exit 1 }
 
-[[ ${#_h} -gt 0 ]] && usage
+# Help is checked before any guards so it works without sudo.
+[[ ${#_h} -gt 0 || ${#_help} -gt 0 ]] && usage
+
 [[ ${#_s} -gt 0 ]] && runner_scope=${_s[2]}
 [[ ${#_g} -gt 0 ]] && ghe_hostname=${_g[2]}
 [[ ${#_n} -gt 0 ]] && runner_name=${_n[2]}
@@ -73,7 +78,7 @@ zparseopts -D -E \
 runner_name="${runner_name:-$(hostname)}"
 
 # ---------------------------------------------------------------------------
-# Sub-Task 1: Guards — platform and root
+# Sub-Task 1: Guards — platform and root (after -h so help works without sudo)
 # ---------------------------------------------------------------------------
 
 [[ "$(uname)" == "Darwin" ]] \
