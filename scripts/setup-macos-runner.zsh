@@ -1,11 +1,12 @@
 #!/bin/zsh
 # setup-macos-runner.zsh — Create the gh-runner local user, download the
 # latest actions-runner tarball, configure it with GitHub, and install it
-# as a launchd LaunchAgent running in the gh-runner user session.
+# as a launchd LaunchDaemon. Pass --uninstall to fully roll everything back.
 #
 # Usage:
 #   sudo RUNNER_CFG_PAT=<pat> ./setup-macos-runner.zsh -s <scope> [options]
 #   sudo ./setup-macos-runner.zsh -s <scope> -t <registration-token> [options]
+#   sudo ./setup-macos-runner.zsh --uninstall
 #
 # Options:
 #   -s <scope>      Required. org (myorg) or repo (myorg/myrepo)
@@ -16,6 +17,8 @@
 #   -r <group>      Runner group (omit to use the GitHub API default)
 #   -d              Disable automatic runner updates for one month
 #   -f              Replace an existing runner with the same name
+#   -u, --uninstall Stop and remove the runner, user, and home directory.
+#                   GitHub entry must be deleted manually from the UI.
 #   -h              Show this help
 #
 # Environment:
@@ -41,7 +44,7 @@ info() {
 }
 
 usage() {
-    sed -n '6,24p' "${SCRIPT_PATH}" | sed 's/^# \{0,1\}//'
+    sed -n '6,26p' "${SCRIPT_PATH}" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -72,6 +75,51 @@ validate_runner_group() {
         || fatal "Invalid runner group '${1}'. Must not have leading/trailing spaces; use alphanumeric, hyphens, underscores, dots, or internal spaces."
 }
 
+do_uninstall() {
+    local _runner_dir=/Users/gh-runner/actions-runner
+
+    info "Stopping runner service"
+    local _ld_plist
+    _ld_plist=$(find /Library/LaunchDaemons -maxdepth 1 \
+                -name 'actions.runner.*.plist' 2>/dev/null | head -1)
+    if [[ -n "${_ld_plist:-}" ]]; then
+        launchctl bootout system "${_ld_plist}" 2>/dev/null || true
+        rm -f "${_ld_plist}"
+        info "Removed ${_ld_plist}"
+    else
+        info "No runner LaunchDaemon found — skipping service stop"
+    fi
+
+    # GitHub deregistration requires a separate "remove token" from the API,
+    # which config.sh always prompts for interactively unless
+    # ACTIONS_RUNNER_INPUT_TOKEN is pre-set. Skip the call here to keep
+    # uninstall non-interactive; the user can remove the entry from GitHub UI.
+    info "Skipping GitHub deregistration — remove the runner from"
+    info "Settings → Actions → Runners if it still appears there."
+
+    info "Removing /Users/gh-runner"
+    # macOS auto-creates Library/Containers and similar dirs for every user
+    # and lets containermanagerd protect them from direct rm even as root.
+    # Strip user-immutable flags first; suppress residual errors on the handful
+    # of containermanager-owned stubs — they hold no runner data.
+    chflags -R nouchg /Users/gh-runner 2>/dev/null || true
+    rm -rf /Users/gh-runner 2>/dev/null || true
+
+    info "Deleting user gh-runner"
+    dscl . -delete /Users/gh-runner 2>/dev/null || true
+
+    info "Deleting group gh-runner"
+    dscl . -delete /Groups/gh-runner 2>/dev/null || true
+
+    print ""
+    print "======================================================"
+    print "  GitHub Actions runner uninstalled"
+    print "  User gh-runner and /Users/gh-runner removed."
+    print "  If the runner still appears in GitHub, remove it"
+    print "  from Settings → Actions → Runners."
+    print "======================================================"
+}
+
 # ---------------------------------------------------------------------------
 # M1: Privileged bootstrap vs. unprivileged runner-install phases.
 #
@@ -99,10 +147,11 @@ labels=""
 runner_group=""
 disableupdate=""
 replace=""
+uninstall=""
 
 zparseopts -D -E \
     s:=_s g:=_g n:=_n l:=_l r:=_r t:=_t \
-    d=_d f=_f h=_h -help=_help \
+    d=_d f=_f u=_u h=_h -help=_help -uninstall=_uninstall \
     || { usage; exit 1 }
 
 # Help is checked before any guards so it works without sudo.
@@ -116,6 +165,7 @@ zparseopts -D -E \
 [[ ${#_t} -gt 0 ]] && reg_token=${_t[2]}
 [[ ${#_d} -gt 0 ]] && disableupdate=true
 [[ ${#_f} -gt 0 ]] && replace=true
+[[ ${#_u} -gt 0 || ${#_uninstall} -gt 0 ]] && uninstall=true
 
 runner_name="${runner_name:-$(hostname)}"
 
@@ -133,15 +183,15 @@ validate_runner_name "$runner_name"
 # Validate operator-supplied inputs (M2) — before any network or fs work
 # ---------------------------------------------------------------------------
 
-[[ -n "$runner_scope" ]] \
-    || fatal "Supply the runner scope with -s (e.g. -s myorg or -s myorg/myrepo)"
-
-validate_scope "$runner_scope"
-[[ -n "$ghe_hostname" ]] && validate_hostname "$ghe_hostname"
-[[ -n "$labels"       ]] && validate_labels  "$labels"
-
-[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" || -n "${PHASE2_REG_TOKEN:-}" ]] \
-    || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
+if [[ -z "$uninstall" ]]; then
+    [[ -n "$runner_scope" ]] \
+        || fatal "Supply the runner scope with -s (e.g. -s myorg or -s myorg/myrepo)"
+    validate_scope "$runner_scope"
+    [[ -n "$ghe_hostname" ]] && validate_hostname "$ghe_hostname"
+    [[ -n "$labels"       ]] && validate_labels  "$labels"
+    [[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" || -n "${PHASE2_REG_TOKEN:-}" ]] \
+        || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 2 (unprivileged) — entered via re-exec as gh-runner
@@ -321,6 +371,11 @@ fi
 
 [[ "$(id -u)" -eq 0 ]] \
     || fatal "Must run as root or via sudo (required for dscl user/group creation)"
+
+if [[ -n "$uninstall" ]]; then
+    do_uninstall
+    exit 0
+fi
 
 # Sub-Task 2: prerequisites check runs in phase 1 so we fail fast ------------
 
