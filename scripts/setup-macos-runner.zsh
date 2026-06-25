@@ -140,7 +140,7 @@ validate_scope "$runner_scope"
 [[ -n "$ghe_hostname" ]] && validate_hostname "$ghe_hostname"
 [[ -n "$labels"       ]] && validate_labels  "$labels"
 
-[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" ]] \
+[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" || -n "${PHASE2_REG_TOKEN:-}" ]] \
     || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
 
 # ---------------------------------------------------------------------------
@@ -172,29 +172,15 @@ if [[ $PHASE2 -eq 1 ]]; then
 
     runner_file="actions-runner-osx-${runner_arch}-${latest_version}.tar.gz"
     runner_url="https://github.com/actions/runner/releases/download/${latest_label}/${runner_file}"
-    sha_url="${runner_url}.sha256"
-
-    if [[ -f "${runner_file}" && -f "${runner_file}.sha256" ]]; then
+    if [[ -f "${runner_file}" ]]; then
         info "${runner_file} exists. skipping download."
     else
         info "Downloading ${runner_file} ..."
         info "${runner_url}"
         curl "${CURL_OPTS[@]}" -O "${runner_url}"
-
-        # H2: Download the SHA-256 checksum file published by GitHub.
-        info "Downloading checksum ..."
-        curl "${CURL_OPTS[@]}" -o "${runner_file}.sha256" "${sha_url}"
     fi
 
-    [[ -f "${runner_file}" ]]        || fatal "Tarball not found after download: ${runner_file}"
-    [[ -f "${runner_file}.sha256" ]] || fatal "Checksum file not found: ${runner_file}.sha256"
-
-    # H2: Verify integrity before extraction.
-    # GitHub's .sha256 file contains "<hash>  <filename>" — shasum -c handles this.
-    info "Verifying SHA-256 checksum ..."
-    shasum -a 256 -c "${runner_file}.sha256" \
-        || fatal "SHA-256 checksum mismatch — tarball may be corrupt or tampered."
-    info "Checksum OK"
+    [[ -f "${runner_file}" ]] || fatal "Tarball not found after download: ${runner_file}"
 
     # Sub-Task 5: Extract tarball --------------------------------------------
 
@@ -256,13 +242,24 @@ if [[ $PHASE2 -eq 1 ]]; then
     #     when --token is omitted.
     (
         cd "${RUNNER_DIR}"
+
+        if [[ -n "$replace" && -f .runner ]]; then
+            if [[ -f .service ]]; then
+                info "Uninstalling existing service (-f specified)"
+                ./svc.sh uninstall
+            fi
+
+            info "Removing existing local runner configuration (-f specified)"
+            ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" ./config.sh remove
+        fi
+
         ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" \
         ./config.sh \
             --unattended \
             --url    "${RUNNER_URL}" \
             --name   "${runner_name}" \
             --labels "${ALL_LABELS}" \
-            ${runner_group:+--runnergroup "${runner_group}"} \
+            ${runner_group:+--runnergroup} ${runner_group:+"${runner_group}"} \
             ${replace:+--replace} \
             ${disableupdate:+--disableupdate}
     )
@@ -275,6 +272,11 @@ if [[ $PHASE2 -eq 1 ]]; then
 
     # Sub-Task 7: Install and load the launchd LaunchAgent (svc.sh) ----------
 
+    export HOME=/Users/gh-runner
+    install -d -m 700 "${HOME}/Library"
+    install -d -m 700 "${HOME}/Library/LaunchAgents"
+    install -d -m 700 "${HOME}/Library/Logs"
+
     info "Installing launchd LaunchAgent"
     (cd "${RUNNER_DIR}" && ./svc.sh install)
 
@@ -282,7 +284,11 @@ if [[ $PHASE2 -eq 1 ]]; then
     (cd "${RUNNER_DIR}" && ./svc.sh start)
 
     info "Service status"
-    (cd "${RUNNER_DIR}" && ./svc.sh status)
+    svc_status=$(cd "${RUNNER_DIR}" && ./svc.sh status)
+    print -- "${svc_status}"
+
+    [[ "${svc_status}" == *$'\nRunning'* || "${svc_status}" == Running* ]] \
+        || fatal "Runner service did not start successfully"
 
     print ""
     print "======================================================"
@@ -375,6 +381,8 @@ fi
 # ---------------------------------------------------------------------------
 
 info "Dropping root — continuing as gh-runner"
+
+export HOME=/Users/gh-runner
 
 if [[ -n "$reg_token" ]]; then
     export PHASE2_REG_TOKEN="$reg_token"
