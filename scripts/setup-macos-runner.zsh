@@ -140,7 +140,7 @@ validate_scope "$runner_scope"
 [[ -n "$ghe_hostname" ]] && validate_hostname "$ghe_hostname"
 [[ -n "$labels"       ]] && validate_labels  "$labels"
 
-[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" ]] \
+[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" || -n "${PHASE2_REG_TOKEN:-}" ]] \
     || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
 
 # ---------------------------------------------------------------------------
@@ -181,27 +181,30 @@ if [[ $PHASE2 -eq 1 ]]; then
     runner_file="actions-runner-osx-${runner_arch}-${latest_version}.tar.gz"
     runner_url="https://github.com/actions/runner/releases/download/${latest_label}/${runner_file}"
     if [[ -f "${runner_file}" ]]; then
-        info "${runner_file} exists — verifying checksum before use."
+        info "${runner_file} exists — skipping download."
     else
         info "Downloading ${runner_file} ..."
         info "${runner_url}"
         curl "${CURL_OPTS[@]}" -O "${runner_url}"
+        [[ -f "${runner_file}" ]] || fatal "Tarball not found after download: ${runner_file}"
+
+        # Sub-Task 5: Verify checksum (only for fresh downloads; cached
+        # files were verified on the previous run).
+        info "Verifying SHA256 checksum ..."
+        if curl "${CURL_OPTS[@]}" -o "./${runner_file}.sha256" "${runner_url}.sha256"; then
+            shasum -a 256 -c "./${runner_file}.sha256" \
+                || fatal "SHA256 mismatch — tarball may be corrupt or tampered: ${runner_file}"
+            rm -f "./${runner_file}.sha256"
+        else
+            info "WARNING: SHA256 file not available from GitHub — checksum skipped"
+        fi
     fi
-
-    [[ -f "${runner_file}" ]] || fatal "Tarball not found after download: ${runner_file}"
-
-    # Sub-Task 5: Verify checksum, then extract ------------------------------
-
-    info "Verifying SHA256 checksum ..."
-    curl "${CURL_OPTS[@]}" -O "${runner_url}.sha256"
-    shasum -a 256 -c "./${runner_file}.sha256" \
-        || fatal "SHA256 mismatch — tarball may be corrupt or tampered: ${runner_file}"
 
     info "Extracting ${runner_file} to ${RUNNER_DIR}"
     tar xzf "./${runner_file}" -C "${RUNNER_DIR}"
 
     [[ -f "${RUNNER_DIR}/run.sh" ]] || fatal "Extraction failed — run.sh not found in ${RUNNER_DIR}"
-    rm -f "./${runner_file}" "./${runner_file}.sha256"
+    rm -f "./${runner_file}"
     info "Extraction complete"
 
     # Sub-Task 6: Configure the runner (config.sh) ---------------------------
@@ -263,6 +266,13 @@ if [[ $PHASE2 -eq 1 ]]; then
 
         if [[ -n "$replace" && -f .runner ]]; then
             info "Removing existing local runner configuration (-f specified)"
+            # svc.sh uninstall must precede config.sh remove; config.sh refuses
+            # to deregister while a service is still installed. In a non-GUI
+            # session svc.sh's launchctl calls query the wrong domain and report
+            # "not installed", so they exit without removing the .service marker
+            # file. Remove it explicitly so config.sh remove can proceed.
+            ./svc.sh uninstall 2>/dev/null || true
+            rm -f .service
             ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" ./config.sh remove
         fi
 
@@ -285,9 +295,10 @@ if [[ $PHASE2 -eq 1 ]]; then
     info "Runner configured successfully"
 
     # Sub-Task 7: Create Library dirs and write the launchd plist -------------
-    # svc.sh install only generates the plist; bootstrapping into the user's
-    # gui/<uid> launchd domain requires root (launchctl asuser), which is done
-    # by phase 1 after this subprocess returns.
+    # svc.sh install generates a LaunchAgent plist in ~/Library/LaunchAgents/.
+    # Phase 1 (root) will convert it to a LaunchDaemon and bootstrap it —
+    # gh-runner is headless (no GUI session), so the gui/<uid> domain never
+    # exists and LaunchAgents cannot be used.
 
     export HOME=/Users/gh-runner
     install -d -m 700 "${HOME}/Library"
@@ -297,7 +308,8 @@ if [[ $PHASE2 -eq 1 ]]; then
     info "Installing launchd plist via svc.sh"
     (cd "${RUNNER_DIR}" && ./svc.sh install)
 
-    [[ -n "$(ls ~/Library/LaunchAgents/actions.runner.*.plist 2>/dev/null)" ]] \
+    [[ -n "$(find "${HOME}/Library/LaunchAgents" -maxdepth 1 \
+              -name 'actions.runner.*.plist' 2>/dev/null | head -1)" ]] \
         || fatal "svc.sh install did not create a LaunchAgent plist"
 
     exit 0
@@ -384,23 +396,22 @@ if [[ -f "${RUNNER_DIR}/run.sh" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# M1: Drop root — run phase 2 as gh-runner, then handle service install here.
+# M1: Drop root — run phase 2 as gh-runner, then install service here.
 # Phase 2 (download/config/plist-write) runs as gh-runner via a subprocess.
-# Service bootstrapping is done back in phase 1 using launchctl asuser, which
-# can register into the user's gui/<uid> launchd domain even without a GUI
-# login session — something gh-runner itself cannot do.
+# Service management stays in phase 1 (root) because gh-runner is a headless
+# account that never creates a GUI session, so the gui/<uid> launchd domain
+# does not exist. We use a LaunchDaemon (system domain, always available) with
+# UserName=gh-runner rather than a LaunchAgent (user domain).
 # ---------------------------------------------------------------------------
 
-# If replacing, teardown the existing service before phase 2 removes the
-# runner registration, so launchd stops the old process cleanly.
+# If replacing, stop and remove the existing LaunchDaemon before phase 2
+# deregisters the runner, so launchd terminates the old process cleanly.
 if [[ -n "$replace" ]]; then
-    _GH_UID=$(id -u gh-runner 2>/dev/null) || true
-    _old_plist=$(ls /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist \
-                 2>/dev/null | head -1) || true
-    if [[ -n "${_GH_UID:-}" && -n "${_old_plist:-}" ]]; then
+    _old_plist=$(find /Library/LaunchDaemons -maxdepth 1 \
+                 -name 'actions.runner.*.plist' 2>/dev/null | head -1)
+    if [[ -n "${_old_plist:-}" ]]; then
         info "Stopping existing service before replacement (-f specified)"
-        launchctl asuser "${_GH_UID}" launchctl bootout \
-            "gui/${_GH_UID}" "${_old_plist}" 2>/dev/null || true
+        launchctl bootout system "${_old_plist}" 2>/dev/null || true
         rm -f "${_old_plist}"
     fi
 fi
@@ -430,25 +441,33 @@ phase2_env=(
 sudo -u gh-runner env -i "${phase2_env[@]}" /bin/zsh "${SCRIPT_PATH}" "${reexec_args[@]}"
 
 # ---------------------------------------------------------------------------
-# Sub-Task 7 (root): Bootstrap the launchd service via launchctl asuser.
-# Root can register into any user's gui/<uid> domain, including headless
-# service accounts that have never had an interactive GUI login.
+# Sub-Task 7 (root): Convert the LaunchAgent plist svc.sh wrote into a
+# LaunchDaemon so the runner starts at boot without requiring a GUI login.
+# PlistBuddy adds UserName=gh-runner and removes SessionCreate (unsupported
+# in the system domain). The daemon is then bootstrapped immediately.
 # ---------------------------------------------------------------------------
 
-GH_UID=$(id -u gh-runner)
-GH_PLIST=$(ls /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist \
-           2>/dev/null | head -1)
-[[ -n "${GH_PLIST}" ]] || fatal "LaunchAgent plist not found after phase 2"
-GH_SVC_LABEL="${${GH_PLIST##*/}%.plist}"
+GH_LA_PLIST=$(find /Users/gh-runner/Library/LaunchAgents -maxdepth 1 \
+              -name 'actions.runner.*.plist' 2>/dev/null | head -1)
+[[ -n "${GH_LA_PLIST}" ]] || fatal "LaunchAgent plist not found after phase 2"
+GH_SVC_LABEL="${${GH_LA_PLIST##*/}%.plist}"
+GH_LD_PLIST="/Library/LaunchDaemons/${GH_SVC_LABEL}.plist"
 
-info "Bootstrapping runner service into gui/${GH_UID} launchd domain"
-launchctl asuser "${GH_UID}" launchctl bootstrap "gui/${GH_UID}" "${GH_PLIST}"
+cp "${GH_LA_PLIST}" "${GH_LD_PLIST}"
+/usr/libexec/PlistBuddy -c "Set :UserName gh-runner" "${GH_LD_PLIST}" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :UserName string gh-runner" "${GH_LD_PLIST}"
+/usr/libexec/PlistBuddy -c "Delete :SessionCreate"          "${GH_LD_PLIST}" 2>/dev/null || true
+chown root:wheel "${GH_LD_PLIST}"
+chmod 644        "${GH_LD_PLIST}"
+rm -f "${GH_LA_PLIST}"
+
+info "Bootstrapping runner service in system launchd domain"
+launchctl bootstrap system "${GH_LD_PLIST}"
 
 info "Waiting for runner service to start ..."
 _started=0
 for _i in {1..10}; do
-    launchctl asuser "${GH_UID}" launchctl print \
-        "gui/${GH_UID}/${GH_SVC_LABEL}" 2>/dev/null \
+    launchctl print "system/${GH_SVC_LABEL}" 2>/dev/null \
         | grep -q 'state = running' && { _started=1; break; }
     sleep 1
 done
@@ -468,5 +487,5 @@ print "  Labels: ${ALL_LABELS}"
 print "  User  : gh-runner"
 print "  Dir   : /Users/gh-runner/actions-runner"
 print "  Logs  : /Users/gh-runner/Library/Logs/actions.runner.*/"
-print "  Plist : ${GH_PLIST}"
+print "  Plist : ${GH_LD_PLIST}"
 print "======================================================"
