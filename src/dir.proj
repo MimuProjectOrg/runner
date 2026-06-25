@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="14.0" DefaultTargets="Build"    xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="14.0" DefaultTargets="Build"
+    xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <!-- Allow overriding the dotnet RuntimeIdentifier independently of the package name.
          Use BuildRuntimeId=ubuntu.26.04-s390x on Ubuntu s390x where Microsoft does not
          publish linux-s390x runtime packs to nuget.org. -->

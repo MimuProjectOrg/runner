@@ -83,7 +83,7 @@ namespace GitHub.Runner.Common.Tests.Listener
             // linux-s390x is not yet published to official GitHub releases; skip this integration test.
             if (BuildConstants.RunnerPackage.PackageName == "linux-s390x")
             {
-                return;
+                Assert.Skip("linux-s390x is not yet published to official GitHub releases");
             }
             try
             {

@@ -22,16 +22,23 @@ fi
 UBUNTU_PACKS=/usr/lib/dotnet/packs
 NUGET_CACHE="${NUGET_PACKAGES:-${HOME}/.nuget/packages}"
 
-UBUNTU_VER=$(ls ${UBUNTU_PACKS}/Microsoft.NETCore.App.Runtime.ubuntu.26.04-s390x/ \
+UBUNTU_VER=$(ls "${UBUNTU_PACKS}/Microsoft.NETCore.App.Runtime.ubuntu.26.04-s390x/" \
              2>/dev/null | sort -V | tail -1)
-if [[ -z ${UBUNTU_VER} ]]; then
+if [[ -z "${UBUNTU_VER}" ]]; then
     echo 'ERROR: ubuntu.26.04-s390x packs not found. Run: apt install dotnet-sdk-10.0' >&2
     exit 1
 fi
 
 REF_PACK_DIR=${UBUNTU_PACKS}/Microsoft.NETCore.App.Ref
-NET8_VER=$(ls ${REF_PACK_DIR}/ 2>/dev/null | { grep '^8\.' || true; } | sort -V | tail -1)
-NET8_VER="${NET8_VER:-8.0.28}"
+NET8_VER=$(ls "${REF_PACK_DIR}/" 2>/dev/null | grep '^8\.' | sort -V | tail -1)
+if [[ -z "${NET8_VER}" ]]; then
+    echo 'ERROR: No net8.0 ref pack found in '"${REF_PACK_DIR}"'.' >&2
+    echo '       The stub nupkgs must be versioned to match what the .NET 10 SDK requests' >&2
+    echo '       during restore of net8.0 projects. Install the ref pack with:' >&2
+    echo '         apt install dotnet-sdk-10.0' >&2
+    echo '       and verify that '"${REF_PACK_DIR}"'/8.*/  exists.' >&2
+    exit 1
+fi
 
 echo "Ubuntu pack version : ${UBUNTU_VER}"
 echo "net8 pack version   : ${NET8_VER}"
