@@ -67,8 +67,8 @@ validate_runner_name() {
 }
 
 validate_runner_group() {
-    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] \
-        || fatal "Invalid runner group '${1}'. Use alphanumeric characters, hyphens, underscores, or dots only."
+    [[ "$1" =~ ^[A-Za-z0-9 ._-]+$ ]] \
+        || fatal "Invalid runner group '${1}'. Use alphanumeric characters, spaces, hyphens, underscores, or dots only."
 }
 
 # ---------------------------------------------------------------------------
@@ -217,9 +217,11 @@ if [[ $PHASE2 -eq 1 ]]; then
         RUNNER_TOKEN="${PHASE2_REG_TOKEN}"
         info "Using supplied registration token"
         unset PHASE2_REG_TOKEN
+        unset RUNNER_CFG_PAT
     elif [[ -n "$reg_token" ]]; then
         RUNNER_TOKEN="$reg_token"
         info "Using supplied registration token"
+        unset RUNNER_CFG_PAT
     else
         info "Exchanging RUNNER_CFG_PAT for a registration token"
 
@@ -252,6 +254,9 @@ if [[ $PHASE2 -eq 1 ]]; then
     # L1: Pass the registration token via env var so it does not appear in
     #     `ps aux` output. ACTIONS_RUNNER_INPUT_TOKEN is read by config.sh
     #     when --token is omitted.
+    # Trap ensures RUNNER_TOKEN is scrubbed even if config.sh exits non-zero
+    # and set -e kills the parent before the unconditional unset below.
+    trap 'unset RUNNER_TOKEN' EXIT INT TERM
     (
         cd "${RUNNER_DIR}"
 
@@ -275,6 +280,7 @@ if [[ $PHASE2 -eq 1 ]]; then
             ${replace:+--replace} \
             ${disableupdate:+--disableupdate}
     )
+    trap - EXIT INT TERM
     unset RUNNER_TOKEN
 
     [[ -f "${RUNNER_DIR}/.runner" ]] \
@@ -342,6 +348,13 @@ info "macOS $(sw_vers -productVersion) · ${raw_arch} → runner_arch=${runner_a
 
 RUNNER_DIR=/Users/gh-runner/actions-runner
 
+# Serialize GID/UID allocation: mkdir is atomic so two concurrent runs
+# cannot both observe the same free ID and then race on dscl -create.
+_lock_dir=/var/run/gh-runner-setup.lock
+if ! mkdir "$_lock_dir" 2>/dev/null; then
+    fatal "Another gh-runner setup is running. Remove ${_lock_dir} if stale."
+fi
+
 info "Ensuring group gh-runner exists"
 if ! dscl . -read /Groups/gh-runner &>/dev/null; then
     GH_GID=$(dscl . -list /Groups PrimaryGroupID \
@@ -374,6 +387,8 @@ else
     info "User gh-runner already exists — skipping"
 fi
 
+rmdir "$_lock_dir"
+
 info "Ensuring /Users/gh-runner home directory exists"
 # L2: mode 700 — home is private to gh-runner only (matches macOS default drwx------).
 install -d -m 700 -o gh-runner -g gh-runner /Users/gh-runner
@@ -393,16 +408,9 @@ fi
 # M1: Drop root — re-exec the remainder of the script as gh-runner.
 # Pass all parsed options explicitly so phase 2 does not need to re-parse
 # from an untrusted environment.
-# RUNNER_CFG_PAT is forwarded via sudo -E (only that variable is preserved).
 # ---------------------------------------------------------------------------
 
 info "Dropping root — continuing as gh-runner"
-
-export HOME=/Users/gh-runner
-
-if [[ -n "$reg_token" ]]; then
-    export PHASE2_REG_TOKEN="$reg_token"
-fi
 
 # Build the argument list for the re-exec from the already-validated variables.
 reexec_args=( --_continue -s "$runner_scope" )
@@ -413,7 +421,14 @@ reexec_args=( --_continue -s "$runner_scope" )
 [[ -n "$disableupdate" ]] && reexec_args+=( -d )
 [[ -n "$replace"      ]] && reexec_args+=( -f )
 
-# sudo -E forwards only variables that are already in the environment.
-# RUNNER_CFG_PAT is unsurprisingly already there when set by the operator;
-# it will be unset inside phase 2 immediately after the token exchange.
-exec sudo -u gh-runner -E /bin/zsh "${SCRIPT_PATH}" "${reexec_args[@]}"
+# Build a minimal environment for phase 2: only what it actually needs.
+# Using env -i instead of sudo -E avoids forwarding DYLD_*, PATH poisoning,
+# and other caller-controlled variables into the gh-runner session.
+phase2_env=(
+    HOME=/Users/gh-runner
+    PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+)
+[[ -n "${RUNNER_CFG_PAT:-}"   ]] && phase2_env+=( "RUNNER_CFG_PAT=${RUNNER_CFG_PAT}" )
+[[ -n "$reg_token"            ]] && phase2_env+=( "PHASE2_REG_TOKEN=${reg_token}" )
+
+exec sudo -u gh-runner env -i "${phase2_env[@]}" /bin/zsh "${SCRIPT_PATH}" "${reexec_args[@]}"
