@@ -117,10 +117,9 @@ zparseopts -D -E \
 [[ ${#_f} -gt 0 ]] && replace=true
 
 runner_name="${runner_name:-$(hostname)}"
-runner_group="${runner_group:-Default}"
 
 validate_runner_name "$runner_name"
-validate_runner_group "$runner_group"
+[[ -z "$runner_group" ]] || validate_runner_group "$runner_group"
 
 # ---------------------------------------------------------------------------
 # Guards — platform (after -h so help works without sudo)
@@ -172,12 +171,16 @@ if [[ $PHASE2 -eq 1 ]]; then
     latest_label=$(curl "${CURL_OPTS[@]}" \
         https://api.github.com/repos/actions/runner/releases/latest \
         | jq -r '.tag_name')
+
+    [[ "$latest_label" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || fatal "Unexpected tag from GitHub API: '${latest_label}' — check network and rate limits"
+
     latest_version=${latest_label[2,-1]}   # strip leading 'v' (Zsh 1-based slice)
 
     runner_file="actions-runner-osx-${runner_arch}-${latest_version}.tar.gz"
     runner_url="https://github.com/actions/runner/releases/download/${latest_label}/${runner_file}"
     if [[ -f "${runner_file}" ]]; then
-        info "${runner_file} exists. skipping download."
+        info "${runner_file} exists — verifying checksum before use."
     else
         info "Downloading ${runner_file} ..."
         info "${runner_url}"
@@ -186,7 +189,12 @@ if [[ $PHASE2 -eq 1 ]]; then
 
     [[ -f "${runner_file}" ]] || fatal "Tarball not found after download: ${runner_file}"
 
-    # Sub-Task 5: Extract tarball --------------------------------------------
+    # Sub-Task 5: Verify checksum, then extract ------------------------------
+
+    info "Verifying SHA256 checksum ..."
+    curl "${CURL_OPTS[@]}" -O "${runner_url}.sha256"
+    shasum -a 256 -c "./${runner_file}.sha256" \
+        || fatal "SHA256 mismatch — tarball may be corrupt or tampered: ${runner_file}"
 
     info "Extracting ${runner_file} to ${RUNNER_DIR}"
     tar xzf "./${runner_file}" -C "${RUNNER_DIR}"
