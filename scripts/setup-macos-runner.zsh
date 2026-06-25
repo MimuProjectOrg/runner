@@ -162,6 +162,10 @@ if [[ $PHASE2 -eq 1 ]]; then
 
     # Sub-Task 4: Download the runner tarball --------------------------------
 
+    # Work inside RUNNER_DIR so curl -O and tar write where gh-runner has
+    # permission (inherited CWD from the root phase may not be writable).
+    cd "${RUNNER_DIR}"
+
     # M3: Enforce HTTPS-only, minimum TLS 1.2 on every curl call.
     CURL_OPTS=( --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 120 -fsSL )
 
@@ -287,7 +291,11 @@ if [[ $PHASE2 -eq 1 ]]; then
     svc_status=$(cd "${RUNNER_DIR}" && ./svc.sh status)
     print -- "${svc_status}"
 
-    [[ "${svc_status}" == *$'\nRunning'* || "${svc_status}" == Running* ]] \
+    # svc.sh status output format varies across runner versions and macOS
+    # releases; query launchd directly for a stable check: a running service
+    # has a numeric PID (not '-') in the first column of launchctl list.
+    launchctl list \
+        | awk '$1 ~ /^[0-9]+/ && $3 ~ /^actions\.runner\./{found=1} END{exit !found}' \
         || fatal "Runner service did not start successfully"
 
     print ""
