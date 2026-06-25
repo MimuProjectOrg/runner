@@ -13,7 +13,7 @@
 #   -g <ghe_host>   GitHub Enterprise Server hostname (omit for github.com)
 #   -n <name>       Runner name (default: hostname)
 #   -l <labels>     Extra labels appended to self-hosted,macOS,{arch}
-#   -r <group>      Runner group (default: Default)
+#   -r <group>      Runner group (omit to use the GitHub API default)
 #   -d              Disable automatic runner updates for one month
 #   -f              Replace an existing runner with the same name
 #   -h              Show this help
@@ -67,8 +67,9 @@ validate_runner_name() {
 }
 
 validate_runner_group() {
-    [[ "$1" =~ ^[A-Za-z0-9 ._-]+$ ]] \
-        || fatal "Invalid runner group '${1}'. Use alphanumeric characters, spaces, hyphens, underscores, or dots only."
+    # Must start and end with alphanumeric/._-; internal spaces allowed.
+    [[ "$1" =~ ^[A-Za-z0-9._-]([A-Za-z0-9 ._-]*[A-Za-z0-9._-])?$ ]] \
+        || fatal "Invalid runner group '${1}'. Must not have leading/trailing spaces; use alphanumeric, hyphens, underscores, dots, or internal spaces."
 }
 
 # ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ validate_scope "$runner_scope"
 [[ -n "$ghe_hostname" ]] && validate_hostname "$ghe_hostname"
 [[ -n "$labels"       ]] && validate_labels  "$labels"
 
-[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" || -n "${PHASE2_REG_TOKEN:-}" ]] \
+[[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" ]] \
     || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
 
 # ---------------------------------------------------------------------------
@@ -261,11 +262,6 @@ if [[ $PHASE2 -eq 1 ]]; then
         cd "${RUNNER_DIR}"
 
         if [[ -n "$replace" && -f .runner ]]; then
-            if [[ -f .service ]]; then
-                info "Uninstalling existing service (-f specified)"
-                ./svc.sh uninstall
-            fi
-
             info "Removing existing local runner configuration (-f specified)"
             ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" ./config.sh remove
         fi
@@ -288,41 +284,22 @@ if [[ $PHASE2 -eq 1 ]]; then
 
     info "Runner configured successfully"
 
-    # Sub-Task 7: Install and load the launchd LaunchAgent (svc.sh) ----------
+    # Sub-Task 7: Create Library dirs and write the launchd plist -------------
+    # svc.sh install only generates the plist; bootstrapping into the user's
+    # gui/<uid> launchd domain requires root (launchctl asuser), which is done
+    # by phase 1 after this subprocess returns.
 
     export HOME=/Users/gh-runner
     install -d -m 700 "${HOME}/Library"
     install -d -m 700 "${HOME}/Library/LaunchAgents"
     install -d -m 700 "${HOME}/Library/Logs"
 
-    info "Installing launchd LaunchAgent"
+    info "Installing launchd plist via svc.sh"
     (cd "${RUNNER_DIR}" && ./svc.sh install)
 
-    info "Starting service"
-    (cd "${RUNNER_DIR}" && ./svc.sh start)
+    [[ -n "$(ls ~/Library/LaunchAgents/actions.runner.*.plist 2>/dev/null)" ]] \
+        || fatal "svc.sh install did not create a LaunchAgent plist"
 
-    info "Service status"
-    svc_status=$(cd "${RUNNER_DIR}" && ./svc.sh status)
-    print -- "${svc_status}"
-
-    # svc.sh status output format varies across runner versions and macOS
-    # releases; query launchd directly for a stable check: a running service
-    # has a numeric PID (not '-') in the first column of launchctl list.
-    launchctl list \
-        | awk '$1 ~ /^[0-9]+/ && $3 ~ /^actions\.runner\./{found=1} END{exit !found}' \
-        || fatal "Runner service did not start successfully"
-
-    print ""
-    print "======================================================"
-    print "  GitHub Actions runner installed and running"
-    print "  Name  : ${runner_name}"
-    print "  Scope : ${RUNNER_URL}"
-    print "  Labels: ${ALL_LABELS}"
-    print "  User  : gh-runner"
-    print "  Dir   : ${RUNNER_DIR}"
-    print "  Logs  : /Users/gh-runner/Library/Logs/actions.runner.*/"
-    print "  Plist : /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist"
-    print "======================================================"
     exit 0
 fi
 
@@ -354,6 +331,7 @@ _lock_dir=/var/run/gh-runner-setup.lock
 if ! mkdir "$_lock_dir" 2>/dev/null; then
     fatal "Another gh-runner setup is running. Remove ${_lock_dir} if stale."
 fi
+trap 'rmdir "$_lock_dir" 2>/dev/null' EXIT INT TERM
 
 info "Ensuring group gh-runner exists"
 if ! dscl . -read /Groups/gh-runner &>/dev/null; then
@@ -388,6 +366,7 @@ else
 fi
 
 rmdir "$_lock_dir"
+trap - EXIT INT TERM
 
 info "Ensuring /Users/gh-runner home directory exists"
 # L2: mode 700 — home is private to gh-runner only (matches macOS default drwx------).
@@ -405,14 +384,30 @@ if [[ -f "${RUNNER_DIR}/run.sh" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# M1: Drop root — re-exec the remainder of the script as gh-runner.
-# Pass all parsed options explicitly so phase 2 does not need to re-parse
-# from an untrusted environment.
+# M1: Drop root — run phase 2 as gh-runner, then handle service install here.
+# Phase 2 (download/config/plist-write) runs as gh-runner via a subprocess.
+# Service bootstrapping is done back in phase 1 using launchctl asuser, which
+# can register into the user's gui/<uid> launchd domain even without a GUI
+# login session — something gh-runner itself cannot do.
 # ---------------------------------------------------------------------------
 
-info "Dropping root — continuing as gh-runner"
+# If replacing, teardown the existing service before phase 2 removes the
+# runner registration, so launchd stops the old process cleanly.
+if [[ -n "$replace" ]]; then
+    _GH_UID=$(id -u gh-runner 2>/dev/null) || true
+    _old_plist=$(ls /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist \
+                 2>/dev/null | head -1) || true
+    if [[ -n "${_GH_UID:-}" && -n "${_old_plist:-}" ]]; then
+        info "Stopping existing service before replacement (-f specified)"
+        launchctl asuser "${_GH_UID}" launchctl bootout \
+            "gui/${_GH_UID}" "${_old_plist}" 2>/dev/null || true
+        rm -f "${_old_plist}"
+    fi
+fi
 
-# Build the argument list for the re-exec from the already-validated variables.
+info "Dropping root — running phase 2 as gh-runner"
+
+# Build the argument list for phase 2 from the already-validated variables.
 reexec_args=( --_continue -s "$runner_scope" )
 [[ -n "$ghe_hostname" ]] && reexec_args+=( -g "$ghe_hostname" )
 [[ -n "$runner_name"  ]] && reexec_args+=( -n "$runner_name"  )
@@ -421,14 +416,57 @@ reexec_args=( --_continue -s "$runner_scope" )
 [[ -n "$disableupdate" ]] && reexec_args+=( -d )
 [[ -n "$replace"      ]] && reexec_args+=( -f )
 
-# Build a minimal environment for phase 2: only what it actually needs.
-# Using env -i instead of sudo -E avoids forwarding DYLD_*, PATH poisoning,
-# and other caller-controlled variables into the gh-runner session.
+# Minimal environment: only what phase 2 actually needs.
+# env -i prevents DYLD_*, poisoned PATH, and other caller vars from leaking in.
+# USER is required by svc.sh's plist template substitution (${USER:-$SUDO_USER}).
 phase2_env=(
     HOME=/Users/gh-runner
+    USER=gh-runner
     PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 )
-[[ -n "${RUNNER_CFG_PAT:-}"   ]] && phase2_env+=( "RUNNER_CFG_PAT=${RUNNER_CFG_PAT}" )
-[[ -n "$reg_token"            ]] && phase2_env+=( "PHASE2_REG_TOKEN=${reg_token}" )
+[[ -n "${RUNNER_CFG_PAT:-}" ]] && phase2_env+=( "RUNNER_CFG_PAT=${RUNNER_CFG_PAT}" )
+[[ -n "$reg_token"          ]] && phase2_env+=( "PHASE2_REG_TOKEN=${reg_token}" )
 
-exec sudo -u gh-runner env -i "${phase2_env[@]}" /bin/zsh "${SCRIPT_PATH}" "${reexec_args[@]}"
+sudo -u gh-runner env -i "${phase2_env[@]}" /bin/zsh "${SCRIPT_PATH}" "${reexec_args[@]}"
+
+# ---------------------------------------------------------------------------
+# Sub-Task 7 (root): Bootstrap the launchd service via launchctl asuser.
+# Root can register into any user's gui/<uid> domain, including headless
+# service accounts that have never had an interactive GUI login.
+# ---------------------------------------------------------------------------
+
+GH_UID=$(id -u gh-runner)
+GH_PLIST=$(ls /Users/gh-runner/Library/LaunchAgents/actions.runner.*.plist \
+           2>/dev/null | head -1)
+[[ -n "${GH_PLIST}" ]] || fatal "LaunchAgent plist not found after phase 2"
+GH_SVC_LABEL="${${GH_PLIST##*/}%.plist}"
+
+info "Bootstrapping runner service into gui/${GH_UID} launchd domain"
+launchctl asuser "${GH_UID}" launchctl bootstrap "gui/${GH_UID}" "${GH_PLIST}"
+
+info "Waiting for runner service to start ..."
+_started=0
+for _i in {1..10}; do
+    launchctl asuser "${GH_UID}" launchctl print \
+        "gui/${GH_UID}/${GH_SVC_LABEL}" 2>/dev/null \
+        | grep -q 'state = running' && { _started=1; break; }
+    sleep 1
+done
+(( _started )) || fatal "Runner service did not reach 'running' state within 10 seconds"
+
+[[ -n "$ghe_hostname" ]] \
+    && RUNNER_URL="https://${ghe_hostname}/${runner_scope}" \
+    || RUNNER_URL="https://github.com/${runner_scope}"
+ALL_LABELS="self-hosted,macOS,${runner_arch}${labels:+,$labels}"
+
+print ""
+print "======================================================"
+print "  GitHub Actions runner installed and running"
+print "  Name  : ${runner_name}"
+print "  Scope : ${RUNNER_URL}"
+print "  Labels: ${ALL_LABELS}"
+print "  User  : gh-runner"
+print "  Dir   : /Users/gh-runner/actions-runner"
+print "  Logs  : /Users/gh-runner/Library/Logs/actions.runner.*/"
+print "  Plist : ${GH_PLIST}"
+print "======================================================"

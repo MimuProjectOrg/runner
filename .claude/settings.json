@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(zsh --version)",
+      "Bash(zsh -c ' *)",
+      "Bash(echo \"Parent exit: $?\")",
+      "Bash(env -i HOME=/Users/gh-runner PATH=/usr/bin:/bin /bin/bash -c 'echo \"USER=[$USER] SUDO_USER=[$SUDO_USER]\"')",
+      "Bash(sw_vers -productVersion)",
+      "Read(//Users/gh-runner/Library/**)",
+      "Read(//Users/gh-runner/Library//**)",
+      "Bash(launchctl help *)",
+      "Read(//private/tmp/**)",
+      "Bash(git -C /Volumes/GitREPO/runner diff HEAD~1 --stat -- scripts/setup-macos-runner.zsh)",
+      "Bash(git -C /Volumes/GitREPO/runner log --oneline -5)"
+    ]
+  }
+}
