@@ -351,7 +351,6 @@ jobs:
           platforms: |
             linux/amd64
             linux/arm64
-            linux/s390x
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest

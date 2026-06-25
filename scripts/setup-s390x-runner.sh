@@ -49,6 +49,33 @@ usage() {
 }
 
 # ---------------------------------------------------------------------------
+# M2: Validate operator-supplied inputs against strict patterns.
+# Accepted: alphanumeric, hyphens, underscores, dots.  Repo scope allows one slash.
+# ---------------------------------------------------------------------------
+
+validate_scope() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$ ]] \
+        || fatal "Invalid scope '${1}'. Expected org (myorg) or repo (myorg/myrepo)."
+}
+validate_hostname() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$ ]] \
+        || fatal "Invalid GHE hostname '${1}'. Must be a plain hostname with no scheme or path."
+}
+validate_labels() {
+    # Each comma-separated label: alphanumeric, hyphens, underscores, dots
+    [[ "$1" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] \
+        || fatal "Invalid labels '${1}'. Use comma-separated alphanumeric identifiers."
+}
+validate_runner_name() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] \
+        || fatal "Invalid runner name '${1}'. Use alphanumeric characters, hyphens, underscores, or dots only."
+}
+validate_runner_group() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] \
+        || fatal "Invalid runner group '${1}'. Use alphanumeric characters, hyphens, underscores, or dots only."
+}
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 
@@ -88,6 +115,12 @@ runner_name="${runner_name:-$(hostname)}"
 
 [[ -n "$runner_scope" ]] \
     || fatal "Supply the runner scope with -s (e.g. -s myorg or -s myorg/myrepo)"
+
+validate_scope        "$runner_scope"
+validate_runner_name  "$runner_name"
+[[ -n "$ghe_hostname" ]] && validate_hostname  "$ghe_hostname"
+[[ -n "$labels"       ]] && validate_labels    "$labels"
+[[ -n "$runner_group" ]] && validate_runner_group "$runner_group"
 
 [[ -n "$reg_token" || -n "${RUNNER_CFG_PAT:-}" ]] \
     || fatal "Supply either -t <registration-token> or export RUNNER_CFG_PAT=<pat>"
@@ -220,6 +253,9 @@ else
         | jq -r '.token'
     )
 
+    # H1: Scrub the PAT from the environment immediately after use.
+    unset RUNNER_CFG_PAT
+
     [[ "$RUNNER_TOKEN" != "null" && -n "$RUNNER_TOKEN" ]] \
         || fatal "Failed to obtain a registration token — check RUNNER_CFG_PAT and scope"
 fi
@@ -230,17 +266,21 @@ ALL_LABELS="self-hosted,linux,s390x${labels:+,$labels}"
 info "Configuring runner '${runner_name}' at ${RUNNER_URL}"
 info "Labels: ${ALL_LABELS}"
 
+# L1: Pass the registration token via env var so it does not appear in
+#     `ps aux` output. ACTIONS_RUNNER_INPUT_TOKEN is read by config.sh
+#     when --token is omitted.
 (
     cd "${RUNNER_DIR}"
+    ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" \
     sudo -E -u gh-runner ./config.sh \
         --unattended \
         --url "${RUNNER_URL}" \
-        --token "${RUNNER_TOKEN}" \
         --name "${runner_name}" \
         --labels "${ALL_LABELS}" \
         ${runner_group:+--runnergroup "${runner_group}"} \
         ${replace:+--replace}
 )
+unset RUNNER_TOKEN
 
 [[ -f "${RUNNER_DIR}/.runner" ]] \
     || fatal "config.sh completed but .runner credentials file was not created"

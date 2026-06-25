@@ -130,7 +130,7 @@ tar xzf ./actions-runner-linux-arm-<RUNNER_VERSION>.tar.gz
 
 ## Linux s390x
 
-> **Note:** This release adds first-class support for s390x (IBM Z). On a native s390x Linux host, `dev.sh` now uses the system-installed .NET SDK (installed via `apt install dotnet-sdk-8.0`) instead of attempting to download a tarball that Microsoft does not publish for this architecture. The build RID is automatically remapped to `ubuntu.26.04-s390x` to match Ubuntu 26.04 system packages, while the released package retains the `linux-s390x` name.
+> **Note:** This release adds first-class support for s390x (IBM Z). On a native s390x Linux host, `dev.sh` now uses the system-installed .NET SDK (installed via `apt install dotnet-sdk-10.0`) instead of attempting to download a tarball that Microsoft does not publish for this architecture. The build RID is automatically remapped to `ubuntu.26.04-s390x` to match Ubuntu 26.04 system packages, while the released package retains the `linux-s390x` name.
 
 ```bash
 # Create a folder
