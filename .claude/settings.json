@@ -11,7 +11,10 @@
       "Bash(launchctl help *)",
       "Read(//private/tmp/**)",
       "Bash(git -C /Volumes/GitREPO/runner diff HEAD~1 --stat -- scripts/setup-macos-runner.zsh)",
-      "Bash(git -C /Volumes/GitREPO/runner log --oneline -5)"
+      "Bash(git -C /Volumes/GitREPO/runner log --oneline -5)",
+      "Bash(git -C /Volumes/GitREPO/runner diff --cached --stat)",
+      "Bash(git -C /Volumes/GitREPO/runner log --oneline -3)",
+      "Bash(git -C /Volumes/GitREPO/runner diff --cached -- scripts/setup-macos-runner.zsh)"
     ]
   }
 }
