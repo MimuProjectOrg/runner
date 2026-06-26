@@ -167,7 +167,7 @@ zparseopts -D -E \
 [[ ${#_f} -gt 0 ]] && replace=true
 [[ ${#_u} -gt 0 || ${#_uninstall} -gt 0 ]] && uninstall=true
 
-runner_name="${runner_name:-$(hostname)}"
+runner_name="${runner_name:-$(hostname -s)}"
 
 validate_runner_name "$runner_name"
 [[ -z "$runner_group" ]] || validate_runner_group "$runner_group"
