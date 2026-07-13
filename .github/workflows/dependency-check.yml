@@ -37,13 +37,15 @@ jobs:
 
       - name: Check dependency versions
         id: check-versions
+        env:
+          CHECK_TYPE: ${{ github.event.inputs.check_type }}
         run: |
           echo "## Dependency Status Report" >> $GITHUB_STEP_SUMMARY
           echo "Generated on: $(date)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Check Node versions
-          if [[ "${{ github.event.inputs.check_type }}" == "all" || "${{ github.event.inputs.check_type }}" == "node" ]]; then
+          if [[ "$CHECK_TYPE" == "all" || "$CHECK_TYPE" == "node" ]]; then
             echo "### Node.js Versions" >> $GITHUB_STEP_SUMMARY
             
             VERSIONS_JSON=$(curl -s https://raw.githubusercontent.com/actions/node-versions/main/versions-manifest.json)
@@ -75,7 +77,7 @@ jobs:
           fi
 
           # Check .NET version
-          if [[ "${{ github.event.inputs.check_type }}" == "all" || "${{ github.event.inputs.check_type }}" == "dotnet" ]]; then
+          if [[ "$CHECK_TYPE" == "all" || "$CHECK_TYPE" == "dotnet" ]]; then
             echo "### .NET SDK Version" >> $GITHUB_STEP_SUMMARY
             
             current_dotnet_version=$(jq -r .sdk.version ./src/global.json)
@@ -96,7 +98,7 @@ jobs:
           fi
 
           # Check Docker versions
-          if [[ "${{ github.event.inputs.check_type }}" == "all" || "${{ github.event.inputs.check_type }}" == "docker" ]]; then
+          if [[ "$CHECK_TYPE" == "all" || "$CHECK_TYPE" == "docker" ]]; then
             echo "### Docker Versions" >> $GITHUB_STEP_SUMMARY
             
             current_docker=$(grep "ARG DOCKER_VERSION=" ./images/Dockerfile | cut -d'=' -f2)
@@ -127,7 +129,7 @@ jobs:
           fi
 
           # Check npm vulnerabilities
-          if [[ "${{ github.event.inputs.check_type }}" == "all" || "${{ github.event.inputs.check_type }}" == "npm" ]]; then
+          if [[ "$CHECK_TYPE" == "all" || "$CHECK_TYPE" == "npm" ]]; then
             echo "### NPM Security Audit" >> $GITHUB_STEP_SUMMARY
             
             cd src/Misc/expressionFunc/hashFiles

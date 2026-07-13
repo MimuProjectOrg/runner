@@ -28,7 +28,7 @@ jobs:
           devScript: ./dev.sh
 
         - runtime: linux-arm64
-          os: ubuntu-latest
+          os: ubuntu-24.04-arm
           devScript: ./dev.sh
 
         - runtime: linux-arm
@@ -52,7 +52,7 @@ jobs:
           devScript: ./dev
 
         - runtime: win-arm64
-          os: windows-latest
+          os: windows-11-arm
           devScript: ./dev
 
     runs-on: ${{ matrix.os }}
@@ -70,7 +70,9 @@ jobs:
       run: |
         ${{ matrix.devScript }} test
       working-directory: src
-      if: matrix.runtime != 'linux-arm64' && matrix.runtime != 'linux-arm' && matrix.runtime != 'linux-s390x' && matrix.runtime != 'osx-arm64' && matrix.runtime != 'win-arm64'
+      # linux-arm and linux-s390x remain cross-compiled (no hosted runners for them);
+      # linux-arm64, win-arm64 and osx-arm64 now build on native ARM runners and can run tests
+      if: matrix.runtime != 'linux-arm' && matrix.runtime != 'linux-s390x'
 
     # Create runner package tar.gz/zip
     - name: Package Release

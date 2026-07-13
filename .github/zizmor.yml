@@ -1,0 +1,15 @@
+# Configuration for zizmor (workflow security audit), run by workflow-lint.yml
+rules:
+  # Tag pins (e.g. actions/checkout@v7) are accepted; only unpinned/branch refs are flagged.
+  # Tightening this to hash-pinning is a possible follow-up, but would touch every workflow.
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin
+
+  # Pre-existing findings in release automation: repository owner/name expansions inside
+  # github-script. Not attacker-controllable in practice for this repo; left as-is to
+  # avoid blind changes to release-critical workflows.
+  template-injection:
+    ignore:
+      - release.yml

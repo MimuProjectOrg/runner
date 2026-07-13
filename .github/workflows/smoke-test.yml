@@ -1,0 +1,68 @@
+name: Smoke Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - '.github/workflows/smoke-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      E2E_PAT: ${{ secrets.RUNNER_E2E_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build & Layout Release
+        working-directory: src
+        run: ./dev.sh layout Release linux-x64
+
+      # Exercise the entry-point scripts users actually run, not just the build.
+      - name: Runner version banner
+        working-directory: _layout
+        run: ./run.sh --version && ./run.sh --commit
+
+      - name: config.sh help
+        working-directory: _layout
+        run: ./config.sh --help
+
+      # Built-in diagnostics (Internet/Actions/Git/Node checks). GITHUB_TOKEN is not a
+      # classic PAT, so some checks may fail auth — informational until a PAT secret exists.
+      - name: Runner self-diagnostics (--check)
+        id: diag
+        working-directory: _layout
+        continue-on-error: true
+        run: ./config.sh --check --url "${{ github.server_url }}/${{ github.repository }}" --pat "${{ github.token }}"
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-diag
+          path: _layout/_diag/
+          if-no-files-found: ignore
+
+      # Full end-to-end registration: only runs when a RUNNER_E2E_PAT secret (repo admin
+      # scope) is configured. Registers an ephemeral runner against this repo, verifies
+      # the config was written, then removes it.
+      - name: E2E register + remove (requires RUNNER_E2E_PAT secret)
+        if: env.E2E_PAT != ''
+        working-directory: _layout
+        run: |
+          ./config.sh --unattended --ephemeral \
+            --url "${{ github.server_url }}/${{ github.repository }}" \
+            --pat "$E2E_PAT" \
+            --name "smoke-${{ github.run_id }}" \
+            --labels smoke-test \
+            --work _work
+          test -f .runner && echo "Runner registered successfully"
+          ./config.sh remove --pat "$E2E_PAT"
+
+      - name: Note skipped E2E
+        if: env.E2E_PAT == ''
+        run: echo "::notice::E2E registration skipped - set the RUNNER_E2E_PAT secret (PAT with repo admin scope) to enable it."

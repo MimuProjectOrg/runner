@@ -1,0 +1,43 @@
+name: Workflow Lint
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+
+      - name: Run actionlint
+        run: ./actionlint -color
+
+  zizmor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # Gate on high-severity findings only; print everything for visibility.
+      - name: Run zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pip install --quiet zizmor
+          echo "::group::Full zizmor report (informational)"
+          zizmor --no-exit-codes --config .github/zizmor.yml .github/workflows/ || true
+          echo "::endgroup::"
+          zizmor --min-severity high --config .github/zizmor.yml .github/workflows/
