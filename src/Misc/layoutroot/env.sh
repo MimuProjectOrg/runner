@@ -36,7 +36,7 @@ function writeVar()
 
 echo $PATH>.path
 
-for var_name in ${varCheckList[@]}
+for var_name in "${varCheckList[@]}"
 do
     writeVar "${var_name}"
 done

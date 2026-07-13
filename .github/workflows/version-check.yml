@@ -1,0 +1,42 @@
+name: Version Consistency
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'releaseVersion'
+      - 'src/runnerversion'
+      - 'releaseNote.md'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # release.yml enforces this at release time (push to main/releases);
+      # this catches mismatches earlier, on the PR itself.
+      - name: Check version files are consistent
+        run: |
+          runner_version=$(tr -d '\n' < src/runnerversion)
+          release_version=$(tr -d '\n' < releaseVersion)
+
+          echo "src/runnerversion: $runner_version"
+          echo "releaseVersion:    $release_version"
+
+          if ! [[ "$runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=src/runnerversion::src/runnerversion is not a valid x.y.z version: '$runner_version'"
+            exit 1
+          fi
+
+          # releaseVersion holds a placeholder between releases; only when it is set
+          # to a real version must it match src/runnerversion (a mismatch would fail Runner CD).
+          if [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$release_version" != "$runner_version" ]]; then
+            echo "::error file=releaseVersion::releaseVersion ($release_version) does not match src/runnerversion ($runner_version)"
+            exit 1
+          fi
+
+          echo "Version files are consistent."

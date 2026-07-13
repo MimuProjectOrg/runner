@@ -1,0 +1,41 @@
+name: Format Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**/*.cs'
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: src/global.json
+
+      # Mirror src/dev.sh `format`: only verify the .cs files changed in this PR,
+      # so pre-existing style drift elsewhere in the tree doesn't block unrelated PRs.
+      - name: Find changed C# files
+        id: changed
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          files=$(git diff --name-only --diff-filter=d "$(git merge-base "origin/$BASE_REF" HEAD)" HEAD -- 'src/**/*.cs' | sed 's|^src/||' | tr '\n' ' ')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "Changed files: $files"
+
+      - name: dotnet format (verify no changes)
+        if: steps.changed.outputs.files != ''
+        working-directory: src
+        env:
+          FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          dotnet format ./ActionsRunner.sln --verify-no-changes --exclude / --include $FILES

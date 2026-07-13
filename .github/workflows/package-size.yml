@@ -1,0 +1,53 @@
+name: Package Size
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - '.github/workflows/package-size.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build & Layout Release
+        working-directory: src
+        run: ./dev.sh layout Release linux-x64
+
+      - name: Package Release
+        working-directory: src
+        run: ./dev.sh package Release linux-x64
+
+      # Informational for now: report the produced tarball size next to the latest
+      # upstream release asset so size regressions are visible on every PR.
+      - name: Report package size
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pkg=$(ls _package/*.tar.gz | head -1)
+          pkg_bytes=$(stat -c%s "$pkg")
+
+          upstream_bytes=$(curl -sSf -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/actions/runner/releases/latest \
+            | jq -r '.assets[] | select(.name | test("^actions-runner-linux-x64-[0-9.]+\\.tar\\.gz$")) | .size' | head -1)
+
+          {
+            echo '## Runner package size (linux-x64)'
+            echo ''
+            echo "| Package | Size |"
+            echo "|---|---|"
+            echo "| This build (\`$(basename "$pkg")\`) | $(numfmt --to=iec "$pkg_bytes") ($pkg_bytes bytes) |"
+            if [ -n "$upstream_bytes" ]; then
+              delta=$(( pkg_bytes - upstream_bytes ))
+              echo "| Latest actions/runner release | $(numfmt --to=iec "$upstream_bytes") ($upstream_bytes bytes) |"
+              echo "| Delta | $delta bytes |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Package: $pkg ($pkg_bytes bytes), upstream latest: ${upstream_bytes:-unknown} bytes"

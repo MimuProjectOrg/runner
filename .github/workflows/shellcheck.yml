@@ -1,0 +1,44 @@
+name: ShellCheck
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '**.sh'
+      - '.github/workflows/shellcheck.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # dotnet-install.sh / dotnet-install.ps1 are vendored from Microsoft, skip them
+      - name: Collect scripts
+        id: scripts
+        run: |
+          files=$(find scripts src -name '*.sh' -not -name 'dotnet-install.sh' | sort | tr '\n' ' ')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "Scripts under check: $files"
+
+      # Gate the build on errors only; full warning-level report goes to the job summary
+      # so it stays visible without blocking on pre-existing style issues.
+      - name: ShellCheck (errors, blocking)
+        env:
+          FILES: ${{ steps.scripts.outputs.files }}
+        run: shellcheck --severity=error $FILES
+
+      - name: ShellCheck (warnings, informational)
+        if: always()
+        env:
+          FILES: ${{ steps.scripts.outputs.files }}
+        run: |
+          {
+            echo '## ShellCheck warning-level report'
+            echo '```'
+            shellcheck --severity=warning $FILES || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
