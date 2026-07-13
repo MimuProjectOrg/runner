@@ -266,15 +266,22 @@ ALL_LABELS="self-hosted,linux,s390x${labels:+,$labels}"
 info "Configuring runner '${runner_name}' at ${RUNNER_URL}"
 info "Labels: ${ALL_LABELS}"
 
-# L1: Pass the registration token via env var so it does not appear in
-#     `ps aux` output. ACTIONS_RUNNER_INPUT_TOKEN is read by config.sh
-#     when --token is omitted.
+# L1: Pass the registration token via --token.  sudo -E is not available on
+#     all targets (Ubuntu 26.04 s390x rejects it), so we cannot rely on env
+#     var inheritance.  The registration token is short-lived (1 h, single use)
+#     so brief ps-visibility is acceptable.
 (
     cd "${RUNNER_DIR}"
-    ACTIONS_RUNNER_INPUT_TOKEN="${RUNNER_TOKEN}" \
-    sudo -E -u gh-runner ./config.sh \
+
+    if [[ -n "$replace" && -f .runner ]]; then
+        info "Removing existing runner configuration (-f specified)"
+        sudo -u gh-runner ./config.sh remove --token "${RUNNER_TOKEN}"
+    fi
+
+    sudo -u gh-runner ./config.sh \
         --unattended \
         --url "${RUNNER_URL}" \
+        --token "${RUNNER_TOKEN}" \
         --name "${runner_name}" \
         --labels "${ALL_LABELS}" \
         ${runner_group:+--runnergroup "${runner_group}"} \
