@@ -53,8 +53,6 @@ namespace GitHub.Runner.Common.Util
                         return "ARM";
                     case Constants.Architecture.Arm64:
                         return "ARM64";
-                    case Constants.Architecture.S390X:
-                        return "S390X";
                     default:
                         throw new NotSupportedException(); // Should never reach here.
                 }

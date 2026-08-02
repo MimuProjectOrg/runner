@@ -48,14 +48,13 @@ jobs:
       linux-x64-sha: ${{ steps.sha.outputs.linux-x64-sha256 }}
       linux-arm64-sha: ${{ steps.sha.outputs.linux-arm64-sha256 }}
       linux-arm-sha: ${{ steps.sha.outputs.linux-arm-sha256 }}
-      linux-s390x-sha: ${{ steps.sha.outputs.linux-s390x-sha256 }}
       win-x64-sha: ${{ steps.sha.outputs.win-x64-sha256 }}
       win-arm64-sha: ${{ steps.sha.outputs.win-arm64-sha256 }}
       osx-x64-sha: ${{ steps.sha.outputs.osx-x64-sha256 }}
       osx-arm64-sha: ${{ steps.sha.outputs.osx-arm64-sha256 }}
     strategy:
       matrix:
-        runtime: [ linux-x64, linux-arm64, linux-arm, linux-s390x, win-x64, osx-x64, osx-arm64, win-arm64 ]
+        runtime: [ linux-x64, linux-arm64, linux-arm, win-x64, osx-x64, osx-arm64, win-arm64 ]
         include:
         - runtime: linux-x64
           os: ubuntu-latest
@@ -66,10 +65,6 @@ jobs:
           devScript: ./dev.sh
 
         - runtime: linux-arm
-          os: ubuntu-latest
-          devScript: ./dev.sh
-
-        - runtime: linux-s390x
           os: ubuntu-latest
           devScript: ./dev.sh
 
@@ -172,11 +167,6 @@ jobs:
       with:
         name: runner-packages-linux-arm64
         path: ./
-    - name: Download Artifact (linux-s390x)
-      uses: actions/download-artifact@v8
-      with:
-        name: runner-packages-linux-s390x
-        path: ./
 
     # Create ReleaseNote file
     - name: Create ReleaseNote
@@ -195,7 +185,6 @@ jobs:
           releaseNote = releaseNote.replace(/<LINUX_X64_SHA>/g, '${{needs.build.outputs.linux-x64-sha}}')
           releaseNote = releaseNote.replace(/<LINUX_ARM_SHA>/g, '${{needs.build.outputs.linux-arm-sha}}')
           releaseNote = releaseNote.replace(/<LINUX_ARM64_SHA>/g, '${{needs.build.outputs.linux-arm64-sha}}')
-          releaseNote = releaseNote.replace(/<LINUX_S390X_SHA>/g, '${{needs.build.outputs.linux-s390x-sha}}')
           console.log(releaseNote)
           core.setOutput('version', runnerVersion);
           core.setOutput('note', releaseNote);
@@ -210,7 +199,6 @@ jobs:
         echo "${{needs.build.outputs.linux-x64-sha}}  actions-runner-linux-x64-${{ steps.releaseNote.outputs.version }}.tar.gz" | shasum -a 256 -c
         echo "${{needs.build.outputs.linux-arm-sha}}  actions-runner-linux-arm-${{ steps.releaseNote.outputs.version }}.tar.gz" | shasum -a 256 -c
         echo "${{needs.build.outputs.linux-arm64-sha}}  actions-runner-linux-arm64-${{ steps.releaseNote.outputs.version }}.tar.gz" | shasum -a 256 -c
-        echo "${{needs.build.outputs.linux-s390x-sha}}  actions-runner-linux-s390x-${{ steps.releaseNote.outputs.version }}.tar.gz" | shasum -a 256 -c
 
     # Create GitHub release
     - uses: actions/create-release@master
@@ -295,16 +283,6 @@ jobs:
         asset_name: actions-runner-linux-arm64-${{ steps.releaseNote.outputs.version }}.tar.gz
         asset_content_type: application/octet-stream
 
-    - name: Upload Release Asset (linux-s390x)
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.createRelease.outputs.upload_url }}
-        asset_path: ${{ github.workspace }}/actions-runner-linux-s390x-${{ steps.releaseNote.outputs.version }}.tar.gz
-        asset_name: actions-runner-linux-s390x-${{ steps.releaseNote.outputs.version }}.tar.gz
-        asset_content_type: application/octet-stream
-
   publish-image:
     needs: release
     runs-on: ubuntu-latest
@@ -329,9 +307,6 @@ jobs:
             const runnerVersion = fs.readFileSync('${{ github.workspace }}/releaseVersion', 'utf8').replace(/\n$/g, '')
             console.log(`Using runner version ${runnerVersion}`)
             core.setOutput('version', runnerVersion);
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v4
