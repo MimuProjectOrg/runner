@@ -74,11 +74,19 @@ namespace GitHub.Runner.Common.Tests.Worker
                     })
                     .ReturnsAsync(0);
 
-                // Act.
-                var nodeVersion = await sh.DetermineNodeRuntimeVersion(_ec.Object, "node20");
-
-                // Assert.
-                Assert.Equal("node20_alpine", nodeVersion);
+                // Act & Assert.
+                // JavaScript Actions in Alpine containers are only supported on x64 Linux;
+                // ContainerStepHost throws by design on every other architecture.
+                if (GitHub.Runner.Common.Constants.Runner.PlatformArchitecture == GitHub.Runner.Common.Constants.Architecture.X64)
+                {
+                    var nodeVersion = await sh.DetermineNodeRuntimeVersion(_ec.Object, "node20");
+                    Assert.Equal("node20_alpine", nodeVersion);
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<NotSupportedException>(
+                        () => sh.DetermineNodeRuntimeVersion(_ec.Object, "node20"));
+                }
             }
         }
 
@@ -101,11 +109,19 @@ namespace GitHub.Runner.Common.Tests.Worker
                     })
                     .ReturnsAsync(0);
 
-                // Act.
-                var nodeVersion = await sh.DetermineNodeRuntimeVersion(_ec.Object, "node20");
-
-                // Assert.
-                Assert.Equal("node20_alpine", nodeVersion);
+                // Act & Assert.
+                // JavaScript Actions in Alpine containers are only supported on x64 Linux;
+                // ContainerStepHost throws by design on every other architecture.
+                if (GitHub.Runner.Common.Constants.Runner.PlatformArchitecture == GitHub.Runner.Common.Constants.Architecture.X64)
+                {
+                    var nodeVersion = await sh.DetermineNodeRuntimeVersion(_ec.Object, "node20");
+                    Assert.Equal("node20_alpine", nodeVersion);
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<NotSupportedException>(
+                        () => sh.DetermineNodeRuntimeVersion(_ec.Object, "node20"));
+                }
             }
         }
 
@@ -182,11 +198,19 @@ namespace GitHub.Runner.Common.Tests.Worker
                     })
                     .ReturnsAsync(0);
 
-                // Act.
-                var nodeVersion = await sh.DetermineNodeRuntimeVersion(_ec.Object, "node24");
-
-                // Assert.
-                Assert.Equal("node24_alpine", nodeVersion);
+                // Act & Assert.
+                // JavaScript Actions in Alpine containers are only supported on x64 Linux;
+                // ContainerStepHost throws by design on every other architecture.
+                if (GitHub.Runner.Common.Constants.Runner.PlatformArchitecture == GitHub.Runner.Common.Constants.Architecture.X64)
+                {
+                    var nodeVersion = await sh.DetermineNodeRuntimeVersion(_ec.Object, "node24");
+                    Assert.Equal("node24_alpine", nodeVersion);
+                }
+                else
+                {
+                    await Assert.ThrowsAsync<NotSupportedException>(
+                        () => sh.DetermineNodeRuntimeVersion(_ec.Object, "node24"));
+                }
             }
         }
 
