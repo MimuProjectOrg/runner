@@ -8,6 +8,10 @@ on:
 jobs:
   npm-audit:
     runs-on: ubuntu-latest
+    # Pushes the fix branch and opens a PR; the repository default token is read-only.
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
       
@@ -122,16 +126,17 @@ jobs:
           EOF
             fi
             
-            # Create PR
+            # Create PR (labels applied best-effort afterwards: this fork
+            # does not carry upstream's label set, and gh pr create fails
+            # outright when a --label does not exist)
             gh pr create -B main -H "$branch_name" \
               --title "chore: npm audit fix for hashFiles dependencies" \
-              --label "dependencies" \
-              --label "dependencies-weekly-check" \
-              --label "dependencies-not-dependabot" \
-              --label "npm" \
-              --label "typescript" \
-              --label "security" \
               --body-file pr_body.txt
+
+            for label in dependencies dependencies-weekly-check dependencies-not-dependabot npm typescript security; do
+              gh pr edit "$branch_name" --add-label "$label" || \
+                echo "::warning title=Label Skipped::Label '$label' does not exist in this repository"
+            done
           else
             echo "✅ No changes to commit - npm audit fix did not modify any files"
           fi
