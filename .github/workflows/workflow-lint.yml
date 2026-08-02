@@ -19,7 +19,12 @@ jobs:
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
 
+      # actionlint shells out to shellcheck for `run:` blocks at shellcheck's default
+      # severity, which fails the job on info/style findings. Gate at error to match
+      # the policy shellcheck.yml already applies to the repo's shell scripts.
       - name: Run actionlint
+        env:
+          SHELLCHECK_OPTS: --severity=error
         run: ./actionlint -color
 
   zizmor:
