@@ -1,0 +1,11 @@
+# Configuration for actionlint, run by .github/workflows/workflow-lint.yml
+#
+# actionlint validates `runs-on` against a list of GitHub-hosted runner labels
+# baked into the binary at release time. The pinned v1.7.7 predates the
+# windows-11-arm image, so it reports the label as unknown even though the
+# runner is real and build (win-arm64) runs on it successfully. Declaring it
+# here is the mechanism actionlint's own diagnostic recommends; drop this entry
+# once the pinned actionlint version ships the label in its built-in list.
+self-hosted-runner:
+  labels:
+    - windows-11-arm
